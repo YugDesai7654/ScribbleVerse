@@ -71,7 +71,8 @@ io.on('connection', (socket: Socket) => {
       // Initialize chat history for the room if not present
       if (!chatHistory[roomId]) chatHistory[roomId] = [];
 
-      io.to(roomId).emit('playerList', rooms[roomId]);
+      // Send player list and hostName
+      io.to(roomId).emit('playerList', { players: rooms[roomId], hostName: room.hostName });
       // Send chat history to the newly joined client
       socket.emit('chatHistory', chatHistory[roomId]);
       socket.emit('joinRoomSuccess', { roomId });
@@ -115,7 +116,10 @@ io.on('connection', (socket: Socket) => {
       if (rooms[currentRoom].length === 0) {
         delete rooms[currentRoom];
       } else {
-        io.to(currentRoom).emit('playerList', rooms[currentRoom]);
+        // Fetch hostName from DB for consistency
+        joinRoom(currentRoom).then(room => {
+          io.to(currentRoom!).emit('playerList', { players: rooms[currentRoom!], hostName: room.hostName });
+        });
       }
     }
   });

@@ -14,6 +14,7 @@ export default function GameRoomPage() {
   const [name, setName] = useState(() => localStorage.getItem('name') || '');
   const [joined, setJoined] = useState(false);
   const [players, setPlayers] = useState<{ id: string; name: string }[]>([]);
+  const [hostName, setHostName] = useState<string>('');
   const [gameStarted, setGameStarted] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
   const [chatMessages, setChatMessages] = useState<{ user: string; text: string; timestamp: number }[]>([]);
@@ -41,7 +42,10 @@ export default function GameRoomPage() {
     socket.on('joinError', handleJoinError);
 
     // Other listeners
-    socket.on('playerList', (players) => setPlayers(players));
+    socket.on('playerList', (data) => {
+      setPlayers(data.players);
+      setHostName(data.hostName);
+    });
     socket.on('gameStarted', () => setGameStarted(true));
     socket.on('chatHistory', (history) => setChatMessages(history));
     socket.on('chatMessage', (msg) => setChatMessages((prev) => [...prev, msg]));
@@ -97,7 +101,7 @@ export default function GameRoomPage() {
     setDrawLines(prev => [...prev, line]);
   };
 
-  const isHost = players.length > 0 && players[0].name === name;
+  const isHost = hostName === name;
 
   return (
     <div className="flex flex-col min-h-screen bg-gray-50">
@@ -117,9 +121,9 @@ export default function GameRoomPage() {
         <aside className="w-64 bg-white border-r p-4 flex flex-col">
           <h3 className="text-lg font-semibold mb-2">Players</h3>
           <ul className="flex-1 overflow-y-auto">
-            {players.map((p, idx) => (
+            {players.map((p) => (
               <li key={p.id} className="py-1">
-                {p.name} {idx === 0 && <span className="text-xs text-blue-500">(Host)</span>}
+                {p.name} {p.name === hostName && <span className="text-xs text-blue-500">(Host)</span>}
                 {p.name === name && <span className="text-xs text-green-500"> (You)</span>}
               </li>
             ))}
