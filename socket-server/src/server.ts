@@ -2,6 +2,12 @@ import express from 'express';
 import http from 'http';
 import cors from 'cors';
 import { Server, Socket } from 'socket.io';
+import dotenv from 'dotenv';
+dotenv.config();
+import { connectDB } from './dbConnect/dbconnect';
+import { createRoom, joinRoom } from './api/room';
+
+connectDB();
 
 const app = express();
 app.use(cors({ origin: '*' }));
@@ -18,24 +24,60 @@ const rooms: Rooms = {};
 // Add chat storage per room
 const chatHistory: { [roomId: string]: { user: string; text: string; timestamp: number }[] } = {};
 
+
+
+
 io.on('connection', (socket: Socket) => {
   let currentRoom: string | null = null;
   let playerName: string | null = null;
 
-  socket.on('joinRoom', ({ roomId, name }: { roomId: string; name: string }) => {
-    currentRoom = roomId;
-    playerName = name;
+  // Host creates a room
+  socket.on('createRoom', async ({ roomId, name }) => {
+    try {
+      await createRoom(roomId, name);
+      // Removed: rooms[roomId] = [{ id: socket.id, name }];
+      socket.emit('createRoomSuccess', { roomId });
+    } catch (err: any) {
+      socket.emit('createRoomError', { message: err.message });
+    }
+  });
 
-    if (!rooms[roomId]) rooms[roomId] = [];
-    rooms[roomId].push({ id: socket.id, name });
-    socket.join(roomId);
+  // User joins a room
+  socket.on('joinRoom', async ({ roomId, name }) => {
+    try {
+      const room = await joinRoom(roomId);
+      currentRoom = roomId;
+      playerName = name;
 
-    // Initialize chat history for the room if not present
-    if (!chatHistory[roomId]) chatHistory[roomId] = [];
+      if (!rooms[roomId]) rooms[roomId] = [];
+      // Check if name already exists with a different socket ID
+      const existingPlayer = rooms[roomId].find(p => p.name === name);
+      if (existingPlayer) {
+        if (existingPlayer.id === socket.id) {
+          // Player is already in the room with this socket, allow re-join (idempotent)
+          // No need to push again
+          console.log(`[joinRoom] Player re-joined: ${name} (socket: ${socket.id}) in room: ${roomId}`);
+        } else {
+          console.log(`[joinRoom] Name conflict: ${name} already taken in room: ${roomId}`);
+          socket.emit('joinError', { message: 'Name already taken in this room.' });
+          return;
+        }
+      } else {
+        rooms[roomId].push({ id: socket.id, name });
+        console.log(`[joinRoom] Player added: ${name} (socket: ${socket.id}) to room: ${roomId}`);
+      }
+      socket.join(roomId);
 
-    io.to(roomId).emit('playerList', rooms[roomId]);
-    // Send chat history to the newly joined client
-    socket.emit('chatHistory', chatHistory[roomId]);
+      // Initialize chat history for the room if not present
+      if (!chatHistory[roomId]) chatHistory[roomId] = [];
+
+      io.to(roomId).emit('playerList', rooms[roomId]);
+      // Send chat history to the newly joined client
+      socket.emit('chatHistory', chatHistory[roomId]);
+      socket.emit('joinRoomSuccess', { roomId });
+    } catch (err: any) {
+      socket.emit('joinError', { message: err.message });
+    }
   });
 
   // Handle chat messages
@@ -68,6 +110,8 @@ io.on('connection', (socket: Socket) => {
     }
   });
 });
+
+
 
 server.listen(4000, () => {
   console.log('Socket.io server running on http://localhost:4000');

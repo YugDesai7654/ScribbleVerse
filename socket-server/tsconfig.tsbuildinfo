@@ -1,1 +1,1 @@
-{"root":["./src/server.ts"],"version":"5.8.3"}
+{"root":["./src/server.ts","./src/api/room.ts","./src/dbconnect/dbconnect.ts","./src/model/room.ts"],"version":"5.8.3"}

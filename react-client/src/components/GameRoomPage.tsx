@@ -23,15 +23,30 @@ export default function GameRoomPage() {
     if (!roomId || !name) return;
     socket.connect();
     socket.emit('joinRoom', { roomId, name });
-    setJoined(true);
-    localStorage.setItem('roomId', roomId);
-    // Listen for events
+
+    // Listen for join success/error
+    const handleJoinSuccess = () => {
+      setJoined(true);
+      localStorage.setItem('roomId', roomId);
+    };
+    const handleJoinError = (data: { message: string }) => {
+      alert(data.message); // Or set an error state and show in UI
+      socket.disconnect();
+      navigate('/room');
+    };
+
+    socket.on('joinRoomSuccess', handleJoinSuccess);
+    socket.on('joinError', handleJoinError);
+
+    // Other listeners
     socket.on('playerList', (players) => setPlayers(players));
     socket.on('gameStarted', () => setGameStarted(true));
-    // Chat events
     socket.on('chatHistory', (history) => setChatMessages(history));
     socket.on('chatMessage', (msg) => setChatMessages((prev) => [...prev, msg]));
+
     return () => {
+      socket.off('joinRoomSuccess', handleJoinSuccess);
+      socket.off('joinError', handleJoinError);
       socket.off('playerList');
       socket.off('gameStarted');
       socket.off('chatHistory');
