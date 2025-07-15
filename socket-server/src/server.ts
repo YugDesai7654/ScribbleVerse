@@ -91,6 +91,16 @@ io.on('connection', (socket: Socket) => {
     io.to(roomId).emit('chatMessage', message);
   });
 
+  // Handle drawing events
+  socket.on('drawing', (data) => {
+    const { roomId, ...line } = data;
+    if (!roomId) return;
+    console.log(`[drawing] Received from ${socket.id} in room ${roomId}:`, line);
+    // Broadcast to all other clients in the room except sender
+    socket.to(roomId).emit('drawing', line);
+    console.log(`[drawing] Broadcasted to room ${roomId}`);
+  });
+
   socket.on('startGame', () => {
     if (!currentRoom) return;
     const players = rooms[currentRoom] || [];

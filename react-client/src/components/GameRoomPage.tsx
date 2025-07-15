@@ -3,6 +3,7 @@
 import { useNavigate, useParams, Navigate } from 'react-router-dom';
 import { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
+import DrawingCanvas, { type DrawLine } from './DrawingCanvas';
 
 const SOCKET_URL = 'http://localhost:4000';
 const socket = io(SOCKET_URL, { autoConnect: false });
@@ -18,6 +19,7 @@ export default function GameRoomPage() {
   const [chatMessages, setChatMessages] = useState<{ user: string; text: string; timestamp: number }[]>([]);
   const [chatInput, setChatInput] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const [drawLines, setDrawLines] = useState<DrawLine[]>([]);
 
   useEffect(() => {
     if (!roomId || !name) return;
@@ -44,6 +46,12 @@ export default function GameRoomPage() {
     socket.on('chatHistory', (history) => setChatMessages(history));
     socket.on('chatMessage', (msg) => setChatMessages((prev) => [...prev, msg]));
 
+    // Drawing: receive remote lines
+    const handleDrawing = (line: DrawLine) => {
+      setDrawLines(prev => [...prev, line]);
+    };
+    socket.on('drawing', handleDrawing);
+
     return () => {
       socket.off('joinRoomSuccess', handleJoinSuccess);
       socket.off('joinError', handleJoinError);
@@ -51,6 +59,7 @@ export default function GameRoomPage() {
       socket.off('gameStarted');
       socket.off('chatHistory');
       socket.off('chatMessage');
+      socket.off('drawing', handleDrawing);
       socket.disconnect();
     };
   }, [roomId, name]);
@@ -81,6 +90,11 @@ export default function GameRoomPage() {
     if (!chatInput.trim()) return;
     socket.emit('chatMessage', { roomId, user: name, text: chatInput });
     setChatInput('');
+  };
+
+  const handleDrawLine = (line: DrawLine) => {
+    socket.emit('drawing', { ...line, roomId });
+    setDrawLines(prev => [...prev, line]);
   };
 
   const isHost = players.length > 0 && players[0].name === name;
@@ -116,7 +130,13 @@ export default function GameRoomPage() {
           <div className="w-full max-w-5xl flex flex-col md:flex-row gap-6">
             {/* Drawing Area */}
             <div className="flex-[2] h-[32rem] bg-gray-200 rounded-lg flex items-center justify-center mb-4 md:mb-0">
-              <span className="text-gray-500">[Drawing Area Placeholder]</span>
+              <DrawingCanvas
+                width={700}
+                height={500}
+                onDrawLine={handleDrawLine}
+                remoteLines={drawLines}
+                canDraw={true} // TODO: restrict to only the drawer if needed
+              />
             </div>
             {/* Chat Area */}
             <div className="w-full md:w-72 bg-white rounded-lg shadow p-4 flex flex-col h-[32rem]">
