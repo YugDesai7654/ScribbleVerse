@@ -1,9 +1,7 @@
 'use client'
 import {  useNavigate } from 'react-router-dom';
 import { useState } from 'react';
-import { io } from 'socket.io-client';
-const SOCKET_URL = 'http://localhost:4000';
-const socket = io(SOCKET_URL, { autoConnect: false });
+import { socket } from '../socket';
 
 
 export default function RoomPage() {
@@ -47,8 +45,12 @@ export default function RoomPage() {
       });
 
       socket.once('createRoomSuccess', ({ roomId }) => {
-        socket.disconnect();
-        navigate(`/room/${roomId}`);
+        // Host should join the room after creating it
+        socket.emit('joinRoom', { roomId, name: name.trim() });
+        socket.once('joinRoomSuccess', () => {
+          // socket.disconnect();
+          navigate(`/room/${roomId}`);
+        });
       });
 
       socket.once('createRoomError', ({ message }) => {

@@ -2,11 +2,8 @@
 'use client'
 import { useNavigate, useParams, Navigate } from 'react-router-dom';
 import { useState, useEffect, useRef } from 'react';
-import { io } from 'socket.io-client';
+import { socket } from '../socket';
 import DrawingCanvas, { type DrawLine } from './DrawingCanvas';
-
-const SOCKET_URL = 'http://localhost:4000';
-const socket = io(SOCKET_URL, { autoConnect: false });
 
 export default function GameRoomPage() {
   const { roomId } = useParams();
@@ -30,14 +27,27 @@ export default function GameRoomPage() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [socketId, setSocketId] = useState<string>('');
 
-  useEffect(() => {
-    if (!roomId || !name) return;
-    socket.connect();
-    socket.emit('joinRoom', { roomId, name });
+  // --- Word selection state ---
+  const [wordOptions, setWordOptions] = useState<string[]>([]);
+  const [showWordModal, setShowWordModal] = useState(false);
+  const [selectedWord, setSelectedWord] = useState<string | null>(null);
+  const [showWord, setShowWord] = useState(false);
 
-    // Store the actual socket id after connection
+  useEffect(() => {
+    // If no roomId or name, redirect to /room
+    if (!roomId || !name) {
+      navigate('/room', { replace: true });
+      return;
+    }
+    // Always connect if not connected
+    if (!socket.connected) {
+      socket.connect();
+    }
     const handleConnect = () => {
       setSocketId(socket.id || '');
+      console.log('[socket] Connected with id:', socket.id);
+      console.log('[frontend] Emitting joinRoom', { roomId, name, socketId: socket.id });
+      socket.emit('joinRoom', { roomId, name });
     };
     socket.on('connect', handleConnect);
 
@@ -105,6 +115,54 @@ export default function GameRoomPage() {
     };
     socket.on('drawing', handleDrawing);
 
+    // --- Word selection listeners ---
+    socket.on('wordOptions', ({ options }) => {
+      console.log('[wordOptions] received:', options, 'socket.id:', socket.id, 'drawerId:', drawerId);
+      setWordOptions(options);
+      setShowWordModal(true);
+      setSelectedWord(null);
+      setShowWord(false);
+      setDrawerId(socket.id || null); // Ensure the modal shows for the drawer and fix linter error
+      });
+    socket.on('wordChosen', ({ word }) => {
+      if (socket.id === drawerId) {
+        setSelectedWord(word);
+        setShowWord(true);
+        setShowWordModal(false);
+      }
+    });
+    socket.on('roundWord', ({ word }) => {
+      if (socket.id === drawerId) {
+        setSelectedWord(word);
+        setShowWord(true);
+      }
+    });
+    socket.on('startRound', ({ round, drawerId }) => {
+      setCurrentRound(round);
+      setDrawerId(drawerId);
+      setShowWordModal(false);
+      setShowWord(false);
+      setDrawLines([]); // Optionally clear the board at round start
+      setTimer(timePerRound);
+      if (timerRef.current) clearInterval(timerRef.current);
+      timerRef.current = setInterval(() => {
+        setTimer(prev => {
+          if (prev <= 1) {
+            clearInterval(timerRef.current!);
+            if (drawerId === socket.id) {
+              socket.emit('endDrawingTurn');
+            }
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    });
+    // --- Board clearing ---
+    socket.on('clearBoard', () => {
+      setDrawLines([]);
+    });
+
     return () => {
       socket.off('joinRoomSuccess', handleJoinSuccess);
       socket.off('joinError', handleJoinError);
@@ -117,10 +175,15 @@ export default function GameRoomPage() {
       socket.off('chatMessage');
       socket.off('drawing', handleDrawing);
       socket.off('connect', handleConnect);
+      socket.off('wordOptions');
+      socket.off('wordChosen');
+      socket.off('roundWord');
+      socket.off('clearBoard');
+      socket.off('startRound');
       socket.disconnect();
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [roomId, name, timePerRound]);
+  }, [roomId, name, timePerRound, drawerId]);
 
   useEffect(() => {
     // Scroll to bottom when new message arrives
@@ -153,6 +216,14 @@ export default function GameRoomPage() {
   const handleDrawLine = (line: DrawLine) => {
     socket.emit('drawing', { ...line, roomId });
     setDrawLines(prev => [...prev, line]);
+  };
+
+  // --- Handle word selection ---
+  const handleWordSelect = (word: string) => {
+    setSelectedWord(word);
+    setShowWordModal(false);
+    setShowWord(true);
+    socket.emit('wordSelected', { word });
   };
 
   const isHost = hostName === name;
@@ -237,8 +308,35 @@ export default function GameRoomPage() {
           </div>
           {/* Guess Word / Word to Draw */}
           <div className="w-full max-w-2xl flex items-center justify-center">
-            <span className="text-lg font-semibold text-gray-700">[Guess Word / Word to Draw Placeholder]</span>
+            {/* Show word to drawer only */}
+            {isDrawer && gameStarted && showWord && selectedWord && (
+              <span className="text-lg font-semibold text-green-700">Your word: {selectedWord}</span>
+            )}
+            {/* For guessers, show guessing prompt */}
+            {!isDrawer && gameStarted && (
+              <span className="text-lg font-semibold text-gray-700">Guess the word!</span>
+            )}
           </div>
+          {/* Word selection modal for drawer */}
+          {showWordModal && wordOptions.length > 0 && (
+            <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-40 z-50">
+              <div className="bg-white rounded-lg shadow-lg p-8 flex flex-col items-center">
+                <h2 className="text-xl font-bold mb-4">Choose a word to draw</h2>
+                <div className="flex gap-4 mb-4">
+                  {wordOptions.map((word) => (
+                    <button
+                      key={word}
+                      onClick={() => handleWordSelect(word)}
+                      className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 transition text-lg"
+                    >
+                      {word}
+                    </button>
+                  ))}
+                </div>
+                <div className="text-gray-500">You have 10 seconds to choose, or one will be picked for you!</div>
+              </div>
+            </div>
+          )}
           {/* Start Game Button (Host only) */}
           {isHost && !gameStarted && (
             <button
