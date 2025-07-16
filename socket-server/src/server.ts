@@ -36,6 +36,33 @@ const gameState: {
   }
 } = {};
 
+// Hardcoded word list for the game
+const WORD_LIST = [
+  'apple', 'banana', 'car', 'dog', 'elephant', 'flower', 'guitar', 'house', 'island', 'jacket',
+  'kangaroo', 'lemon', 'mountain', 'notebook', 'ocean', 'pizza', 'queen', 'robot', 'sun', 'tree',
+  'umbrella', 'violin', 'whale', 'xylophone', 'yacht', 'zebra', 'balloon', 'cat', 'drum', 'egg',
+  'fish', 'grape', 'hat', 'ice', 'juice', 'kite', 'lamp', 'moon', 'nest', 'orange',
+];
+
+// Store the current word and options per room/turn
+const wordState: {
+  [roomId: string]: {
+    currentWord: string | null;
+    wordOptions: string[];
+    wordSelectionTimeout?: NodeJS.Timeout;
+  }
+} = {};
+
+// Helper to pick 3 random words
+function getRandomWords(): string[] {
+  const shuffled = [...WORD_LIST].sort(() => 0.5 - Math.random());
+  return shuffled.slice(0, 3);
+}
+// Helper to create placeholder (e.g., _ _ _ _)
+function getPlaceholder(word: string) {
+  return word.split('').map(c => (c === ' ' ? ' ' : '_')).join(' ');
+}
+
 
 io.on('connection', (socket: Socket) => {
   let currentRoom: string | null = null;
@@ -141,6 +168,63 @@ io.on('connection', (socket: Socket) => {
     console.log(`[drawing] Broadcasted to room ${roomId}`);
   });
 
+  // After emitting 'drawingTurn', send word options to the drawer
+  // Update the logic in startGame and endDrawingTurn to call a new function:
+
+  function startDrawingTurn(roomId: string, drawerId: string, round: number) {
+    // Pick 3 random words
+    const options = getRandomWords();
+    wordState[roomId] = {
+      currentWord: null,
+      wordOptions: options,
+    };
+    // Send options to the drawer only
+    io.to(drawerId).emit('wordOptions', { options, round });
+    // Start 10s timer for word selection
+    if (wordState[roomId].wordSelectionTimeout) {
+      clearTimeout(wordState[roomId].wordSelectionTimeout);
+    }
+    wordState[roomId].wordSelectionTimeout = setTimeout(() => {
+      // If no word selected, auto-pick first
+      if (!wordState[roomId].currentWord) {
+        handleWordChosen(roomId, drawerId, options[0], round);
+      }
+    }, 10000);
+  }
+
+  // Handle word chosen by drawer
+  function handleWordChosen(roomId: string, drawerId: string, word: string, round: number) {
+    wordState[roomId].currentWord = word;
+    if (wordState[roomId].wordSelectionTimeout) {
+      clearTimeout(wordState[roomId].wordSelectionTimeout);
+    }
+    // Notify all players: drawer gets the word, others get placeholder
+    const placeholder = getPlaceholder(word);
+    const players = rooms[roomId] || [];
+    players.forEach(p => {
+      if (p.id === drawerId) {
+        io.to(p.id).emit('roundStart', { word, isDrawer: true, round });
+      } else {
+        io.to(p.id).emit('roundStart', { word: placeholder, isDrawer: false, round });
+      }
+    });
+  }
+
+  // Listen for drawer's word choice
+  socket.on('chooseWord', ({ roomId, word, round }) => {
+    if (!roomId || !word) return;
+    // Only allow the current drawer to choose
+    const state = gameState[roomId];
+    if (!state) return;
+    const currentDrawerIndex = state.drawnThisRound.length;
+    const currentDrawerId = state.drawingOrder[currentDrawerIndex];
+    if (socket.id !== currentDrawerId) return;
+    // Only allow if not already chosen
+    if (wordState[roomId]?.currentWord) return;
+    handleWordChosen(roomId, socket.id, word, round);
+  });
+
+  // Update startGame and endDrawingTurn to use startDrawingTurn
   socket.on('startGame', () => {
     if (!currentRoom) return;
     const players = rooms[currentRoom] || [];
@@ -163,6 +247,7 @@ io.on('connection', (socket: Socket) => {
       // Start first turn
       const firstDrawer = gameState[currentRoom].drawingOrder[0];
       io.to(currentRoom).emit('drawingTurn', { drawerId: firstDrawer, round: 1 });
+      startDrawingTurn(currentRoom, firstDrawer, 1);
     }
   });
 
@@ -184,6 +269,7 @@ io.on('connection', (socket: Socket) => {
         const nextDrawer = state.drawingOrder[0];
         io.to(currentRoom).emit('newRound', { round: state.currentRound });
         io.to(currentRoom).emit('drawingTurn', { drawerId: nextDrawer, round: state.currentRound });
+        startDrawingTurn(currentRoom, nextDrawer, state.currentRound);
       } else {
         // Game over
         state.gameStarted = false;
@@ -194,6 +280,7 @@ io.on('connection', (socket: Socket) => {
       const nextIndex = state.drawnThisRound.length;
       const nextDrawer = state.drawingOrder[nextIndex];
       io.to(currentRoom).emit('drawingTurn', { drawerId: nextDrawer, round: state.currentRound });
+      startDrawingTurn(currentRoom, nextDrawer, state.currentRound);
     }
   });
 

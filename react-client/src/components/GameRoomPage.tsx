@@ -29,6 +29,10 @@ export default function GameRoomPage() {
   const [timer, setTimer] = useState<number>(60);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [socketId, setSocketId] = useState<string>('');
+  const [wordOptions, setWordOptions] = useState<string[] | null>(null);
+  const [selectedWord, setSelectedWord] = useState<string | null>(null);
+  const [showWordOptions, setShowWordOptions] = useState(false);
+  const [displayWord, setDisplayWord] = useState<string>('');
 
   useEffect(() => {
     if (!roomId || !name) return;
@@ -105,6 +109,19 @@ export default function GameRoomPage() {
     };
     socket.on('drawing', handleDrawing);
 
+    socket.on('wordOptions', ({ options, round }) => {
+      setWordOptions(options);
+      setShowWordOptions(true);
+      setSelectedWord(null);
+      setDisplayWord('');
+    });
+    socket.on('roundStart', ({ word, isDrawer, round }) => {
+      setShowWordOptions(false);
+      setWordOptions(null);
+      setSelectedWord(null);
+      setDisplayWord(word);
+    });
+
     return () => {
       socket.off('joinRoomSuccess', handleJoinSuccess);
       socket.off('joinError', handleJoinError);
@@ -117,6 +134,8 @@ export default function GameRoomPage() {
       socket.off('chatMessage');
       socket.off('drawing', handleDrawing);
       socket.off('connect', handleConnect);
+      socket.off('wordOptions');
+      socket.off('roundStart');
       socket.disconnect();
       if (timerRef.current) clearInterval(timerRef.current);
     };
@@ -153,6 +172,12 @@ export default function GameRoomPage() {
   const handleDrawLine = (line: DrawLine) => {
     socket.emit('drawing', { ...line, roomId });
     setDrawLines(prev => [...prev, line]);
+  };
+
+  const handleWordSelect = (word: string) => {
+    if (!roomId || !wordOptions || selectedWord) return;
+    setSelectedWord(word);
+    socket.emit('chooseWord', { roomId, word, round: currentRound });
   };
 
   const isHost = hostName === name;
@@ -236,8 +261,34 @@ export default function GameRoomPage() {
             </div>
           </div>
           {/* Guess Word / Word to Draw */}
-          <div className="w-full max-w-2xl flex items-center justify-center">
-            <span className="text-lg font-semibold text-gray-700">[Guess Word / Word to Draw Placeholder]</span>
+          <div className="w-full max-w-2xl flex flex-col items-center justify-center">
+            {/* Word selection section for drawer */}
+            {isDrawer && showWordOptions && wordOptions && (
+              <div className="mb-4 p-4 bg-yellow-100 rounded shadow text-center">
+                <div className="mb-2 font-semibold">Choose a word to draw:</div>
+                <div className="flex gap-4 justify-center">
+                  {wordOptions.map((word) => (
+                    <button
+                      key={word}
+                      className={`px-4 py-2 rounded border font-bold transition ${selectedWord === word ? 'bg-blue-500 text-white' : 'bg-white hover:bg-blue-100'}`}
+                      onClick={() => handleWordSelect(word)}
+                      disabled={!!selectedWord}
+                    >
+                      {word}
+                    </button>
+                  ))}
+                </div>
+                {selectedWord && <div className="mt-2 text-green-600 font-semibold">You selected: {selectedWord}</div>}
+                {!selectedWord && <div className="mt-2 text-gray-600">You have 10 seconds to choose, or one will be picked for you.</div>}
+              </div>
+            )}
+            {/* Word/placeholder display for all players */}
+            {displayWord && (
+              <span className="text-lg font-semibold text-gray-700">{isDrawer ? `Your word: ${displayWord}` : displayWord}</span>
+            )}
+            {!showWordOptions && !displayWord && (
+              <span className="text-lg font-semibold text-gray-700">[Guess Word / Word to Draw Placeholder]</span>
+            )}
           </div>
           {/* Start Game Button (Host only) */}
           {isHost && !gameStarted && (
