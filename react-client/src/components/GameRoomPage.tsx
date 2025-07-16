@@ -11,21 +11,35 @@ const socket = io(SOCKET_URL, { autoConnect: false });
 export default function GameRoomPage() {
   const { roomId } = useParams();
   const navigate = useNavigate();
-  const [name, setName] = useState(() => localStorage.getItem('name') || '');
+  const [name] = useState(() => localStorage.getItem('name') || '');
   const [joined, setJoined] = useState(false);
   const [players, setPlayers] = useState<{ id: string; name: string }[]>([]);
   const [hostName, setHostName] = useState<string>('');
   const [gameStarted, setGameStarted] = useState(false);
-  const nameRef = useRef<HTMLInputElement>(null);
+  // const nameRef = useRef<HTMLInputElement>(null);
   const [chatMessages, setChatMessages] = useState<{ user: string; text: string; timestamp: number }[]>([]);
   const [chatInput, setChatInput] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [drawLines, setDrawLines] = useState<DrawLine[]>([]);
+  const [currentRound, setCurrentRound] = useState(1);
+  const [totalRounds, setTotalRounds] = useState(3);
+  const [timePerRound, setTimePerRound] = useState(60);
+  const [drawerId, setDrawerId] = useState<string | null>(null);
+  // const [drawingOrder, setDrawingOrder] = useState<string[]>([]);
+  const [timer, setTimer] = useState<number>(60);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [socketId, setSocketId] = useState<string>('');
 
   useEffect(() => {
     if (!roomId || !name) return;
     socket.connect();
     socket.emit('joinRoom', { roomId, name });
+
+    // Store the actual socket id after connection
+    const handleConnect = () => {
+      setSocketId(socket.id || '');
+    };
+    socket.on('connect', handleConnect);
 
     // Listen for join success/error
     const handleJoinSuccess = () => {
@@ -46,7 +60,42 @@ export default function GameRoomPage() {
       setPlayers(data.players);
       setHostName(data.hostName);
     });
-    socket.on('gameStarted', () => setGameStarted(true));
+    socket.on('gameStarted', (data) => {
+      setGameStarted(true);
+      setTotalRounds(data.rounds);
+      setTimePerRound(data.timePerRound);
+      // setDrawingOrder(data.drawingOrder);
+      setCurrentRound(1);
+    });
+    socket.on('drawingTurn', ({ drawerId, round }) => {
+      setDrawerId(drawerId);
+      setCurrentRound(round);
+      setTimer(timePerRound);
+      if (timerRef.current) clearInterval(timerRef.current);
+      timerRef.current = setInterval(() => {
+        setTimer(prev => {
+          if (prev <= 1) {
+            clearInterval(timerRef.current!);
+            // Only the drawer emits endDrawingTurn
+            if (drawerId === socket.id) {
+              socket.emit('endDrawingTurn');
+            }
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    });
+    socket.on('newRound', ({ round }) => {
+      setCurrentRound(round);
+    });
+    socket.on('gameOver', () => {
+      setGameStarted(false);
+      setDrawerId(null);
+      setTimer(0);
+      if (timerRef.current) clearInterval(timerRef.current);
+      alert('Game Over!');
+    });
     socket.on('chatHistory', (history) => setChatMessages(history));
     socket.on('chatMessage', (msg) => setChatMessages((prev) => [...prev, msg]));
 
@@ -61,12 +110,17 @@ export default function GameRoomPage() {
       socket.off('joinError', handleJoinError);
       socket.off('playerList');
       socket.off('gameStarted');
+      socket.off('drawingTurn');
+      socket.off('newRound');
+      socket.off('gameOver');
       socket.off('chatHistory');
       socket.off('chatMessage');
       socket.off('drawing', handleDrawing);
+      socket.off('connect', handleConnect);
       socket.disconnect();
+      if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [roomId, name]);
+  }, [roomId, name, timePerRound]);
 
   useEffect(() => {
     // Scroll to bottom when new message arrives
@@ -102,6 +156,8 @@ export default function GameRoomPage() {
   };
 
   const isHost = hostName === name;
+  const isDrawer = drawerId === socketId;
+  const drawerName = players.find(p => p.id === drawerId)?.name || '...';
 
   return (
     <div className="flex flex-col min-h-screen bg-gray-50">
@@ -133,14 +189,23 @@ export default function GameRoomPage() {
         <main className="flex-1 flex flex-col items-center justify-center p-8 gap-6">
           <div className="w-full max-w-5xl flex flex-col md:flex-row gap-6">
             {/* Drawing Area */}
-            <div className="flex-[2] h-[32rem] bg-gray-200 rounded-lg flex items-center justify-center mb-4 md:mb-0">
+            <div className="flex-[2] h-[32rem] bg-gray-200 rounded-lg flex flex-col items-center justify-center mb-4 md:mb-0">
+              {/* Game Info */}
+              <div className="w-full flex justify-between items-center mb-2 px-2">
+                <div className="text-md font-semibold text-gray-700">Round: {currentRound} / {totalRounds}</div>
+                <div className="text-md font-semibold text-gray-700">Time Left: {timer}s</div>
+                <div className="text-md font-semibold text-gray-700">Drawer: {drawerName}</div>
+              </div>
               <DrawingCanvas
                 width={700}
                 height={500}
                 onDrawLine={handleDrawLine}
                 remoteLines={drawLines}
-                canDraw={true} // TODO: restrict to only the drawer if needed
+                canDraw={isDrawer && gameStarted}
               />
+              {!isDrawer && gameStarted && (
+                <div className="mt-2 text-blue-600 font-semibold">Wait for your turn to draw!</div>
+              )}
             </div>
             {/* Chat Area */}
             <div className="w-full md:w-72 bg-white rounded-lg shadow p-4 flex flex-col h-[32rem]">

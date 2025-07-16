@@ -11,6 +11,8 @@ export default function RoomPage() {
     const [name, setName] = useState('');
     const [roomCode, setRoomCode] = useState('');
     const [error, setError] = useState('');
+    const [rounds, setRounds] = useState(3);
+    const [timePerRound, setTimePerRound] = useState(60);
     const navigate = useNavigate();
   
     const handleJoin = (e: React.FormEvent) => {
@@ -37,7 +39,12 @@ export default function RoomPage() {
       localStorage.setItem('name', name.trim());
 
       socket.connect();
-      socket.emit('createRoom', { roomId: newRoomId, name: name.trim() });
+      socket.emit('createRoom', {
+        roomId: newRoomId,
+        name: name.trim(),
+        rounds: rounds,
+        timePerRound: timePerRound,
+      });
 
       socket.once('createRoomSuccess', ({ roomId }) => {
         socket.disconnect();
@@ -98,6 +105,24 @@ export default function RoomPage() {
                 value={name}
                 onChange={e => setName(e.target.value)}
                 autoFocus
+              />
+              <input
+                type="number"
+                min={1}
+                max={10}
+                className="border rounded px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                placeholder="Number of rounds (default 3)"
+                value={rounds}
+                onChange={e => setRounds(Number(e.target.value))}
+              />
+              <input
+                type="number"
+                min={10}
+                max={300}
+                className="border rounded px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                placeholder="Drawing time in seconds (default 60)"
+                value={timePerRound}
+                onChange={e => setTimePerRound(Number(e.target.value))}
               />
               {error && <div className="text-red-500 text-sm">{error}</div>}
               <button

@@ -24,7 +24,17 @@ const rooms: Rooms = {};
 // Add chat storage per room
 const chatHistory: { [roomId: string]: { user: string; text: string; timestamp: number }[] } = {};
 
-
+// Add game state per room
+const gameState: {
+  [roomId: string]: {
+    rounds: number;
+    timePerRound: number;
+    currentRound: number;
+    drawingOrder: string[];
+    drawnThisRound: string[];
+    gameStarted: boolean;
+  }
+} = {};
 
 
 io.on('connection', (socket: Socket) => {
@@ -32,10 +42,18 @@ io.on('connection', (socket: Socket) => {
   let playerName: string | null = null;
 
   // Host creates a room
-  socket.on('createRoom', async ({ roomId, name }) => {
+  socket.on('createRoom', async ({ roomId, name, rounds = 3, timePerRound = 60 }) => {
     try {
       await createRoom(roomId, name);
-      // Removed: rooms[roomId] = [{ id: socket.id, name }];
+      // Initialize game state for the room
+      gameState[roomId] = {
+        rounds: rounds,
+        timePerRound: timePerRound,
+        currentRound: 1,
+        drawingOrder: [],
+        drawnThisRound: [],
+        gameStarted: false,
+      };
       socket.emit('createRoomSuccess', { roomId });
     } catch (err: any) {
       socket.emit('createRoomError', { message: err.message });
@@ -45,6 +63,11 @@ io.on('connection', (socket: Socket) => {
   // User joins a room
   socket.on('joinRoom', async ({ roomId, name }) => {
     try {
+      // Prevent joining if game already started
+      if (gameState[roomId]?.gameStarted) {
+        socket.emit('joinError', { message: 'Game already started. Cannot join.' });
+        return;
+      }
       const room = await joinRoom(roomId);
       currentRoom = roomId;
       playerName = name;
@@ -54,8 +77,7 @@ io.on('connection', (socket: Socket) => {
       const existingPlayer = rooms[roomId].find(p => p.name === name);
       if (existingPlayer) {
         if (existingPlayer.id === socket.id) {
-          // Player is already in the room with this socket, allow re-join (idempotent)
-          // No need to push again
+         
           console.log(`[joinRoom] Player re-joined: ${name} (socket: ${socket.id}) in room: ${roomId}`);
         } else {
           console.log(`[joinRoom] Name conflict: ${name} already taken in room: ${roomId}`);
@@ -76,7 +98,24 @@ io.on('connection', (socket: Socket) => {
       // Send chat history to the newly joined client
       socket.emit('chatHistory', chatHistory[roomId]);
       socket.emit('joinRoomSuccess', { roomId });
+
+      // If game is already started, send current game state to the joining player
+      if (gameState[roomId]?.gameStarted) {
+        const state = gameState[roomId];
+        socket.emit('gameStarted', {
+          rounds: state.rounds,
+          timePerRound: state.timePerRound,
+        });
+        // Send current turn info
+        const currentDrawerIndex = state.drawnThisRound.length;
+        const currentDrawerId = state.drawingOrder[currentDrawerIndex];
+        socket.emit('drawingTurn', {
+          drawerId: currentDrawerId,
+          round: state.currentRound,
+        });
+      }
     } catch (err: any) {
+      console.log(`[joinRoom] Error: ${err.message}`);
       socket.emit('joinError', { message: err.message });
     }
   });
@@ -106,7 +145,55 @@ io.on('connection', (socket: Socket) => {
     if (!currentRoom) return;
     const players = rooms[currentRoom] || [];
     if (players.length >= 2 && players[0].id === socket.id) {
-      io.to(currentRoom).emit('gameStarted');
+      // Ensure gameState exists for the room
+      if (!gameState[currentRoom]) {
+        console.error(`[startGame] gameState for room ${currentRoom} does not exist.`);
+        return;
+      }
+      // Initialize drawing order and game state
+      gameState[currentRoom].drawingOrder = players.map(p => p.id);
+      gameState[currentRoom].drawnThisRound = [];
+      gameState[currentRoom].currentRound = 1;
+      gameState[currentRoom].gameStarted = true;
+      io.to(currentRoom).emit('gameStarted', {
+        rounds: gameState[currentRoom].rounds,
+        timePerRound: gameState[currentRoom].timePerRound,
+        drawingOrder: gameState[currentRoom].drawingOrder,
+      });
+      // Start first turn
+      const firstDrawer = gameState[currentRoom].drawingOrder[0];
+      io.to(currentRoom).emit('drawingTurn', { drawerId: firstDrawer, round: 1 });
+    }
+  });
+
+  // Handle end of drawing turn
+  socket.on('endDrawingTurn', () => {
+    if (!currentRoom) return;
+    const state = gameState[currentRoom];
+    if (!state) return;
+    // Mark this player as having drawn this round
+    if (!state.drawnThisRound.includes(socket.id)) {
+      state.drawnThisRound.push(socket.id);
+    }
+    // If all players have drawn this round, advance round
+    if (state.drawnThisRound.length === state.drawingOrder.length) {
+      if (state.currentRound < state.rounds) {
+        state.currentRound += 1;
+        state.drawnThisRound = [];
+        // Start next round with first player
+        const nextDrawer = state.drawingOrder[0];
+        io.to(currentRoom).emit('newRound', { round: state.currentRound });
+        io.to(currentRoom).emit('drawingTurn', { drawerId: nextDrawer, round: state.currentRound });
+      } else {
+        // Game over
+        state.gameStarted = false;
+        io.to(currentRoom).emit('gameOver');
+      }
+    } else {
+      // Next player's turn
+      const nextIndex = state.drawnThisRound.length;
+      const nextDrawer = state.drawingOrder[nextIndex];
+      io.to(currentRoom).emit('drawingTurn', { drawerId: nextDrawer, round: state.currentRound });
     }
   });
 
@@ -115,7 +202,13 @@ io.on('connection', (socket: Socket) => {
       rooms[currentRoom] = rooms[currentRoom].filter(p => p.id !== socket.id);
       if (rooms[currentRoom].length === 0) {
         delete rooms[currentRoom];
+        delete gameState[currentRoom];
       } else {
+        // Remove from drawing order and drawnThisRound if present
+        if (gameState[currentRoom]) {
+          gameState[currentRoom].drawingOrder = gameState[currentRoom].drawingOrder.filter(id => id !== socket.id);
+          gameState[currentRoom].drawnThisRound = gameState[currentRoom].drawnThisRound.filter(id => id !== socket.id);
+        }
         // Fetch hostName from DB for consistency
         joinRoom(currentRoom).then(room => {
           io.to(currentRoom!).emit('playerList', { players: rooms[currentRoom!], hostName: room.hostName });
