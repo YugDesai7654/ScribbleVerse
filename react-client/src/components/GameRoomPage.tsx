@@ -2,11 +2,8 @@
 'use client'
 import { useNavigate, useParams, Navigate } from 'react-router-dom';
 import { useState, useEffect, useRef } from 'react';
-import { io } from 'socket.io-client';
+import socket from '../socket';
 import DrawingCanvas, { type DrawLine } from './DrawingCanvas';
-
-const SOCKET_URL = 'http://localhost:4000';
-const socket = io(SOCKET_URL, { autoConnect: false });
 
 export default function GameRoomPage() {
   const { roomId } = useParams();
@@ -33,113 +30,128 @@ export default function GameRoomPage() {
   const [selectedWord, setSelectedWord] = useState<string | null>(null);
   const [showWordOptions, setShowWordOptions] = useState(false);
   const [displayWord, setDisplayWord] = useState<string>('');
+  const listenersCleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (!roomId || !name) return;
-    socket.connect();
-    socket.emit('joinRoom', { roomId, name });
 
-    // Store the actual socket id after connection
-    const handleConnect = () => {
-      setSocketId(socket.id || '');
-    };
-    socket.on('connect', handleConnect);
-
-    // Listen for join success/error
-    const handleJoinSuccess = () => {
-      setJoined(true);
-      localStorage.setItem('roomId', roomId);
-    };
-    const handleJoinError = (data: { message: string }) => {
-      alert(data.message); // Or set an error state and show in UI
-      socket.disconnect();
-      navigate('/room');
-    };
-
-    socket.on('joinRoomSuccess', handleJoinSuccess);
-    socket.on('joinError', handleJoinError);
-
-    // Other listeners
-    socket.on('playerList', (data) => {
-      setPlayers(data.players);
-      setHostName(data.hostName);
-    });
-    socket.on('gameStarted', (data) => {
-      setGameStarted(true);
-      setTotalRounds(data.rounds);
-      setTimePerRound(data.timePerRound);
-      // setDrawingOrder(data.drawingOrder);
-      setCurrentRound(1);
-    });
-    socket.on('drawingTurn', ({ drawerId, round }) => {
-      setDrawerId(drawerId);
-      setCurrentRound(round);
-      setTimer(timePerRound);
-      if (timerRef.current) clearInterval(timerRef.current);
-      timerRef.current = setInterval(() => {
-        setTimer(prev => {
-          if (prev <= 1) {
-            clearInterval(timerRef.current!);
-            // Only the drawer emits endDrawingTurn
-            if (drawerId === socket.id) {
-              socket.emit('endDrawingTurn');
+    // Attach all listeners
+    let listenersAttached = false;
+    function attachListeners() {
+      if (listenersAttached) return listenersCleanupRef.current;
+      listenersAttached = true;
+      // Listen for join success/error
+      const handleJoinSuccess = () => {
+        setJoined(true);
+        localStorage.setItem('roomId', roomId || '');
+      };
+      const handleJoinError = (data: { message: string }) => {
+        alert(data.message);
+        socket.disconnect();
+        navigate('/room' as string);
+      };
+      socket.on('joinRoomSuccess', handleJoinSuccess);
+      socket.on('joinError', handleJoinError);
+      socket.on('playerList', (data) => {
+        setPlayers(data.players);
+        setHostName(data.hostName);
+      });
+      socket.on('gameStarted', (data) => {
+        setGameStarted(true);
+        setTotalRounds(data.rounds);
+        setTimePerRound(data.timePerRound);
+        setCurrentRound(1);
+      });
+      socket.on('drawingTurn', ({ drawerId, round }) => {
+        setDrawerId(drawerId);
+        setCurrentRound(round);
+        setTimer(timePerRound);
+        if (timerRef.current) clearInterval(timerRef.current);
+        timerRef.current = setInterval(() => {
+          setTimer(prev => {
+            if (prev <= 1) {
+              clearInterval(timerRef.current!);
+              if (drawerId === socket.id) {
+                socket.emit('endDrawingTurn');
+              }
+              return 0;
             }
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-    });
-    socket.on('newRound', ({ round }) => {
-      setCurrentRound(round);
-    });
-    socket.on('gameOver', () => {
-      setGameStarted(false);
-      setDrawerId(null);
-      setTimer(0);
-      if (timerRef.current) clearInterval(timerRef.current);
-      alert('Game Over!');
-    });
-    socket.on('chatHistory', (history) => setChatMessages(history));
-    socket.on('chatMessage', (msg) => setChatMessages((prev) => [...prev, msg]));
+            return prev - 1;
+          });
+        }, 1000);
+      });
+      socket.on('newRound', ({ round }) => {
+        setCurrentRound(round);
+      });
+      socket.on('gameOver', () => {
+        setGameStarted(false);
+        setDrawerId(null);
+        setTimer(0);
+        if (timerRef.current) clearInterval(timerRef.current);
+        alert('Game Over!');
+      });
+      socket.on('chatHistory', (history) => setChatMessages(history));
+      socket.on('chatMessage', (msg) => setChatMessages((prev) => [...prev, msg]));
+      const handleDrawing = (line: DrawLine) => {
+        setDrawLines(prev => [...prev, line]);
+      };
+      socket.on('drawing', handleDrawing);
+      socket.on('wordOptions', ({ options, round }) => {
+        setWordOptions(options);
+        setShowWordOptions(true);
+        setSelectedWord(null);
+        setDisplayWord('');
+      });
+      socket.on('roundStart', ({ word, isDrawer, round }) => {
+        setShowWordOptions(false);
+        setWordOptions(null);
+        setSelectedWord(null);
+        setDisplayWord(word);
+      });
+      // Clean up
+      const cleanup = () => {
+        socket.off('joinRoomSuccess', handleJoinSuccess);
+        socket.off('joinError', handleJoinError);
+        socket.off('playerList');
+        socket.off('gameStarted');
+        socket.off('drawingTurn');
+        socket.off('newRound');
+        socket.off('gameOver');
+        socket.off('chatHistory');
+        socket.off('chatMessage');
+        socket.off('drawing', handleDrawing);
+        socket.off('wordOptions');
+        socket.off('roundStart');
+      };
+      listenersCleanupRef.current = cleanup;
+      return cleanup;
+    }
 
-    // Drawing: receive remote lines
-    const handleDrawing = (line: DrawLine) => {
-      setDrawLines(prev => [...prev, line]);
-    };
-    socket.on('drawing', handleDrawing);
+    attachListeners();
 
-    socket.on('wordOptions', ({ options, round }) => {
-      setWordOptions(options);
-      setShowWordOptions(true);
-      setSelectedWord(null);
-      setDisplayWord('');
-    });
-    socket.on('roundStart', ({ word, isDrawer, round }) => {
-      setShowWordOptions(false);
-      setWordOptions(null);
-      setSelectedWord(null);
-      setDisplayWord(word);
-    });
+    // Always emit joinRoom, either immediately or after connect
+    if (socket.connected) {
+      socket.emit('joinRoom', { roomId, name });
+    } else {
+      const handleConnectAndJoin = () => {
+        setSocketId(socket.id || '');
+        socket.emit('joinRoom', { roomId, name });
+        socket.off('connect', handleConnectAndJoin);
+      };
+      socket.on('connect', handleConnectAndJoin);
+      socket.connect();
+    }
 
     return () => {
-      socket.off('joinRoomSuccess', handleJoinSuccess);
-      socket.off('joinError', handleJoinError);
-      socket.off('playerList');
-      socket.off('gameStarted');
-      socket.off('drawingTurn');
-      socket.off('newRound');
-      socket.off('gameOver');
-      socket.off('chatHistory');
-      socket.off('chatMessage');
-      socket.off('drawing', handleDrawing);
-      socket.off('connect', handleConnect);
-      socket.off('wordOptions');
-      socket.off('roundStart');
+      socket.off('connect');
+      if (listenersCleanupRef.current) {
+        listenersCleanupRef.current();
+        listenersCleanupRef.current = null;
+      }
       socket.disconnect();
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [roomId, name, timePerRound]);
+  }, [roomId, name, timePerRound, navigate]);
 
   useEffect(() => {
     // Scroll to bottom when new message arrives
