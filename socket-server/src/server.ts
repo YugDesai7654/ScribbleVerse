@@ -224,18 +224,31 @@ io.on('connection', (socket: Socket) => {
     handleWordChosen(roomId, socket.id, word, round);
   });
 
-  // Update startGame and endDrawingTurn to use startDrawingTurn
-  socket.on('startGame', () => {
+  // Update startGame and endDrawingTurn to use host as the only drawer
+  socket.on('startGame', async () => {
     if (!currentRoom) return;
     const players = rooms[currentRoom] || [];
+    // Only host can start the game
     if (players.length >= 2 && players[0].id === socket.id) {
       // Ensure gameState exists for the room
       if (!gameState[currentRoom]) {
         console.error(`[startGame] gameState for room ${currentRoom} does not exist.`);
         return;
       }
-      // Initialize drawing order and game state
-      gameState[currentRoom].drawingOrder = players.map(p => p.id);
+      // Find hostName from DB (for robustness)
+      let hostName = playerName;
+      try {
+        const room = await joinRoom(currentRoom);
+        hostName = room.hostName;
+      } catch {}
+      // Find the host's socket ID
+      const hostPlayer = players.find(p => p.name === hostName);
+      if (!hostPlayer) {
+        console.error(`[startGame] Host not found in player list for room ${currentRoom}`);
+        return;
+      }
+      // Set drawingOrder to only the host's socket ID
+      gameState[currentRoom].drawingOrder = [hostPlayer.id];
       gameState[currentRoom].drawnThisRound = [];
       gameState[currentRoom].currentRound = 1;
       gameState[currentRoom].gameStarted = true;
@@ -244,44 +257,47 @@ io.on('connection', (socket: Socket) => {
         timePerRound: gameState[currentRoom].timePerRound,
         drawingOrder: gameState[currentRoom].drawingOrder,
       });
-      // Start first turn
-      const firstDrawer = gameState[currentRoom].drawingOrder[0];
-      io.to(currentRoom).emit('drawingTurn', { drawerId: firstDrawer, round: 1 });
-      startDrawingTurn(currentRoom, firstDrawer, 1);
+      // Start first turn (host is always the drawer)
+      io.to(currentRoom).emit('drawingTurn', { drawerId: hostPlayer.id, round: 1 });
+      startDrawingTurn(currentRoom, hostPlayer.id, 1);
     }
   });
 
-  // Handle end of drawing turn
+  // Refactor endDrawingTurn: only host draws, so just advance round or end game
   socket.on('endDrawingTurn', () => {
     if (!currentRoom) return;
     const state = gameState[currentRoom];
     if (!state) return;
-    // Mark this player as having drawn this round
-    if (!state.drawnThisRound.includes(socket.id)) {
-      state.drawnThisRound.push(socket.id);
+    // Only host can end the turn
+    const hostId = state.drawingOrder[0];
+    if (socket.id !== hostId) return;
+    // Mark host as having drawn this round
+    if (!state.drawnThisRound.includes(hostId)) {
+      state.drawnThisRound.push(hostId);
     }
-    // If all players have drawn this round, advance round
-    if (state.drawnThisRound.length === state.drawingOrder.length) {
-      if (state.currentRound < state.rounds) {
-        state.currentRound += 1;
-        state.drawnThisRound = [];
-        // Start next round with first player
-        const nextDrawer = state.drawingOrder[0];
-        io.to(currentRoom).emit('newRound', { round: state.currentRound });
-        io.to(currentRoom).emit('drawingTurn', { drawerId: nextDrawer, round: state.currentRound });
-        startDrawingTurn(currentRoom, nextDrawer, state.currentRound);
-      } else {
-        // Game over
-        state.gameStarted = false;
-        io.to(currentRoom).emit('gameOver');
-      }
+    // If all rounds are done, end game
+    if (state.currentRound >= state.rounds) {
+      state.gameStarted = false;
+      io.to(currentRoom).emit('gameOver');
     } else {
-      // Next player's turn
-      const nextIndex = state.drawnThisRound.length;
-      const nextDrawer = state.drawingOrder[nextIndex];
-      io.to(currentRoom).emit('drawingTurn', { drawerId: nextDrawer, round: state.currentRound });
-      startDrawingTurn(currentRoom, nextDrawer, state.currentRound);
+      // Advance to next round
+      state.currentRound += 1;
+      state.drawnThisRound = [];
+      io.to(currentRoom).emit('newRound', { round: state.currentRound });
+      io.to(currentRoom).emit('drawingTurn', { drawerId: hostId, round: state.currentRound });
+      startDrawingTurn(currentRoom, hostId, state.currentRound);
     }
+  });
+
+  // Refactor chooseWord: only host can choose
+  socket.on('chooseWord', ({ roomId, word, round }) => {
+    if (!roomId || !word) return;
+    const state = gameState[roomId];
+    if (!state) return;
+    const hostId = state.drawingOrder[0];
+    if (socket.id !== hostId) return;
+    if (wordState[roomId]?.currentWord) return;
+    handleWordChosen(roomId, socket.id, word, round);
   });
 
   socket.on('disconnect', () => {

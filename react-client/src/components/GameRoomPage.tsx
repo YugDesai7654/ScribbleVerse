@@ -35,6 +35,12 @@ export default function GameRoomPage() {
   useEffect(() => {
     if (!roomId || !name) return;
 
+    // Set socketId immediately if already connected
+    if (socket.connected) {
+      setSocketId(socket.id || '');
+      console.log('[DEBUG] socket.connected on mount, socket.id:', socket.id);
+    }
+
     // Attach all listeners
     let listenersAttached = false;
     function attachListeners() {
@@ -66,6 +72,7 @@ export default function GameRoomPage() {
         setDrawerId(drawerId);
         setCurrentRound(round);
         setTimer(timePerRound);
+        console.log('[DEBUG] drawingTurn event:', { drawerId, round, socketId: socket.id });
         if (timerRef.current) clearInterval(timerRef.current);
         timerRef.current = setInterval(() => {
           setTimer(prev => {
@@ -97,12 +104,14 @@ export default function GameRoomPage() {
       };
       socket.on('drawing', handleDrawing);
       socket.on('wordOptions', ({ options, round }) => {
+        console.log('[DEBUG] wordOptions event:', { options, round, socketId, drawerId, isDrawer: drawerId === socketId });
         setWordOptions(options);
         setShowWordOptions(true);
         setSelectedWord(null);
         setDisplayWord('');
       });
       socket.on('roundStart', ({ word, isDrawer, round }) => {
+        console.log('[DEBUG] roundStart event:', { word, isDrawer, round, socketId, drawerId, isDrawerFlag: drawerId === socketId });
         setShowWordOptions(false);
         setWordOptions(null);
         setSelectedWord(null);
@@ -135,6 +144,7 @@ export default function GameRoomPage() {
     } else {
       const handleConnectAndJoin = () => {
         setSocketId(socket.id || '');
+        console.log('[DEBUG] socket.connect event, socket.id:', socket.id);
         socket.emit('joinRoom', { roomId, name });
         socket.off('connect', handleConnectAndJoin);
       };
