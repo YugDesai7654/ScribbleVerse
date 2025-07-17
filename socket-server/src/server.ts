@@ -36,6 +36,9 @@ const gameState: {
   }
 } = {};
 
+// Add player points per room
+const playerPoints: { [roomId: string]: { [playerName: string]: number } } = {};
+
 // Hardcoded word list for the game
 const WORD_LIST = [
   'apple', 'banana', 'car', 'dog', 'elephant', 'flower', 'guitar', 'house', 'island', 'jacket',
@@ -150,7 +153,20 @@ io.on('connection', (socket: Socket) => {
   // Handle chat messages
   socket.on('chatMessage', ({ roomId, user, text }: { roomId: string; user: string; text: string }) => {
     if (!roomId || !user || !text) return;
-    const message = { user, text, timestamp: Date.now() };
+    // Check for correct guess
+    const currentWord = wordState[roomId]?.currentWord;
+    if (currentWord && text.trim().toLowerCase() === currentWord.trim().toLowerCase()) {
+      // Award points
+      if (!playerPoints[roomId]) playerPoints[roomId] = {};
+      if (!playerPoints[roomId][user]) playerPoints[roomId][user] = 0;
+      playerPoints[roomId][user] += 10; // Award 10 points for correct guess
+      // Broadcast special message
+      const message = { user, text: `${user} guessed correctly!`, timestamp: Date.now(), correct: true };
+      io.to(roomId).emit('chatMessage', message);
+      return;
+    }
+    // Normal chat message
+    const message = { user, text, timestamp: Date.now(), correct: false };
     if (!chatHistory[roomId]) chatHistory[roomId] = [];
     chatHistory[roomId].push(message);
     // Optionally limit chat history size

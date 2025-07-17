@@ -14,7 +14,7 @@ export default function GameRoomPage() {
   const [hostName, setHostName] = useState<string>('');
   const [gameStarted, setGameStarted] = useState(false);
   // const nameRef = useRef<HTMLInputElement>(null);
-  const [chatMessages, setChatMessages] = useState<{ user: string; text: string; timestamp: number }[]>([]);
+  const [chatMessages, setChatMessages] = useState<{ user: string; text: string; timestamp: number; correct?: boolean }[]>([]);
   const [chatInput, setChatInput] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [drawLines, setDrawLines] = useState<DrawLine[]>([]);
@@ -267,7 +267,7 @@ export default function GameRoomPage() {
             <div className="w-full md:w-72 bg-white rounded-lg shadow p-4 flex flex-col h-[32rem]">
               <div className="flex-1 overflow-y-auto mb-2 space-y-1">
                 {chatMessages.map((msg, idx) => (
-                  <div key={idx} className="text-sm">
+                  <div key={idx} className={`text-sm ${msg.correct ? 'text-green-600' : 'text-red-600'}`}>
                     <span className="font-semibold text-blue-600">{msg.user}:</span> {msg.text}
                   </div>
                 ))}
