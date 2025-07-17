@@ -32,6 +32,7 @@ export default function GameRoomPage() {
   const [displayWord, setDisplayWord] = useState<string>('');
   const listenersCleanupRef = useRef<(() => void) | null>(null);
   const [roundCountdown, setRoundCountdown] = useState<number | null>(null);
+  const [points, setPoints] = useState<{ [name: string]: number }>({});
 
   useEffect(() => {
     if (!roomId || !name) return;
@@ -125,6 +126,7 @@ export default function GameRoomPage() {
         setSelectedWord(null);
         setDisplayWord(word);
       });
+      socket.on('pointsUpdate', (pts) => setPoints(pts));
       // Clean up
       const cleanup = () => {
         socket.off('joinRoomSuccess', handleJoinSuccess);
@@ -140,6 +142,7 @@ export default function GameRoomPage() {
         socket.off('wordOptions');
         socket.off('roundStart');
         socket.off('roundStartingSoon');
+        socket.off('pointsUpdate');
       };
       listenersCleanupRef.current = cleanup;
       return cleanup;
@@ -220,7 +223,6 @@ export default function GameRoomPage() {
       {/* Header: Room, Points, Leave Room */}
       <div className="flex items-center justify-between px-8 py-4 bg-white shadow">
         <div className="text-xl font-bold text-blue-600">Room: {roomId}</div>
-        <div className="text-lg font-semibold">Points: <span className="text-green-600">[Points Placeholder]</span></div>
         <button
           onClick={handleLeaveRoom}
           className="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600 transition"
@@ -237,6 +239,7 @@ export default function GameRoomPage() {
               <li key={p.id} className="py-1">
                 {p.name} {p.name === hostName && <span className="text-xs text-blue-500">(Host)</span>}
                 {p.name === name && <span className="text-xs text-green-500"> (You)</span>}
+                <span className="ml-2 text-sm text-purple-700 font-bold">{points[p.name] || 0} pts</span>
               </li>
             ))}
           </ul>

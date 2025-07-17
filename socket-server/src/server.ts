@@ -33,11 +33,15 @@ const gameState: {
     drawingOrder: string[];
     drawnThisRound: string[];
     gameStarted: boolean;
+    roundStartTime?: number; // Added for time-based scoring
   }
 } = {};
 
 // Add player points per room
 const playerPoints: { [roomId: string]: { [playerName: string]: number } } = {};
+
+// Track correct guessers per round
+const correctGuessers: { [roomId: string]: Set<string> } = {};
 
 // Hardcoded word list for the game
 const WORD_LIST = [
@@ -155,14 +159,41 @@ io.on('connection', (socket: Socket) => {
     if (!roomId || !user || !text) return;
     // Check for correct guess
     const currentWord = wordState[roomId]?.currentWord;
-    if (currentWord && text.trim().toLowerCase() === currentWord.trim().toLowerCase()) {
-      // Award points
+    const state = gameState[roomId];
+    if (currentWord && state && text.trim().toLowerCase() === currentWord.trim().toLowerCase()) {
+      // Only reward first correct guess per user per round
+      if (!correctGuessers[roomId]) correctGuessers[roomId] = new Set();
+      if (correctGuessers[roomId].has(user)) {
+        // Already guessed this round, just show correct message
+        const message = { user, text: `${user} guessed correctly!`, timestamp: Date.now(), correct: true };
+        io.to(roomId).emit('chatMessage', message);
+        return;
+      }
+      correctGuessers[roomId].add(user);
+      // Calculate time remaining (from state.timePerRound and timer)
+      // We'll need to track the round start time
+      if (!state.roundStartTime) state.roundStartTime = Date.now();
+      const elapsed = Math.floor((Date.now() - state.roundStartTime) / 1000);
+      const timeRemaining = Math.max(0, state.timePerRound - elapsed);
+      const points = timeRemaining * 5;
       if (!playerPoints[roomId]) playerPoints[roomId] = {};
       if (!playerPoints[roomId][user]) playerPoints[roomId][user] = 0;
-      playerPoints[roomId][user] += 10; // Award 10 points for correct guess
+      playerPoints[roomId][user] += points;
       // Broadcast special message
       const message = { user, text: `${user} guessed correctly!`, timestamp: Date.now(), correct: true };
       io.to(roomId).emit('chatMessage', message);
+      // Emit updated points
+      io.to(roomId).emit('pointsUpdate', playerPoints[roomId]);
+      // Check if all guessers are correct (all except drawer)
+      const players = rooms[roomId] || [];
+      const drawerId = state.drawingOrder[0];
+      const drawerPlayer = players.find(p => p.id === drawerId);
+      const guesserNames = players.filter(p => p.name !== (drawerPlayer?.name || '')).map(p => p.name);
+      const allGuessed = guesserNames.every(name => correctGuessers[roomId].has(name));
+      if (allGuessed) {
+        // End round (but keep 5s timer)
+        endRoundWithDelay(roomId, state, drawerPlayer?.name || '', guesserNames);
+      }
       return;
     }
     // Normal chat message
@@ -194,6 +225,8 @@ io.on('connection', (socket: Socket) => {
       currentWord: null,
       wordOptions: options,
     };
+    // Set round start time for time-based scoring
+    if (gameState[roomId]) gameState[roomId].roundStartTime = Date.now();
     // Send options to the drawer only
     io.to(drawerId).emit('wordOptions', { options, round });
     // Start 10s timer for word selection
@@ -206,6 +239,39 @@ io.on('connection', (socket: Socket) => {
         handleWordChosen(roomId, drawerId, options[0], round);
       }
     }, 10000);
+  }
+
+  // Helper to end round with 5s delay and drawer points
+  function endRoundWithDelay(roomId: string, state: { currentRound: number; drawingOrder: string[]; drawnThisRound: string[]; roundStartTime?: number; timePerRound: number; rounds: number }, drawerName: string, guesserNames: string[]) {
+    // Calculate drawer points: average of all guessers' points for this round
+    const roundPoints = guesserNames.map(name => {
+      // Points earned this round = total points - previous total (not tracked, so just use this round's points)
+      // For simplicity, just sum points for this round (if needed, can track per-round points)
+      return playerPoints[roomId]?.[name] || 0;
+    });
+    const avg = guesserNames.length > 0 ? Math.floor(roundPoints.reduce((a, b) => a + b, 0) / guesserNames.length) : 0;
+    if (drawerName) {
+      if (!playerPoints[roomId][drawerName]) playerPoints[roomId][drawerName] = 0;
+      playerPoints[roomId][drawerName] += avg;
+    }
+    io.to(roomId).emit('pointsUpdate', playerPoints[roomId]);
+    // 5s delay before next round
+    let countdown = 5;
+    const interval = setInterval(() => {
+      io.to(roomId).emit('roundStartingSoon', { seconds: countdown });
+      countdown--;
+      if (countdown < 0) {
+        clearInterval(interval);
+        // Advance to next round or end game
+        state.currentRound += 1;
+        state.drawnThisRound = [];
+        correctGuessers[roomId] = new Set();
+        state.roundStartTime = Date.now();
+        io.to(roomId).emit('newRound', { round: state.currentRound });
+        io.to(roomId).emit('drawingTurn', { drawerId: state.drawingOrder[0], round: state.currentRound });
+        startDrawingTurn(roomId, state.drawingOrder[0], state.currentRound);
+      }
+    }, 1000);
   }
 
   // Handle word chosen by drawer
@@ -302,22 +368,11 @@ io.on('connection', (socket: Socket) => {
       io.to(roomId).emit('gameOver');
       console.log('[DEBUG] Game over emitted.');
     } else {
-      // Add 5 second delay before next round
-      let countdown = 5;
-      const interval = setInterval(() => {
-        io.to(roomId).emit('roundStartingSoon', { seconds: countdown });
-        countdown--;
-        if (countdown < 0) {
-          clearInterval(interval);
-          // Advance to next round
-          state.currentRound += 1;
-          state.drawnThisRound = [];
-          console.log('[DEBUG] Advancing to round', state.currentRound);
-          io.to(roomId).emit('newRound', { round: state.currentRound });
-          io.to(roomId).emit('drawingTurn', { drawerId: hostId, round: state.currentRound });
-          startDrawingTurn(roomId, hostId, state.currentRound);
-        }
-      }, 1000);
+      // End round with 5s delay and drawer points
+      const players = rooms[roomId] || [];
+      const drawerPlayer = players.find(p => p.id === hostId);
+      const guesserNames = players.filter(p => p.name !== (drawerPlayer?.name || '')).map(p => p.name);
+      endRoundWithDelay(roomId, state, drawerPlayer?.name || '', guesserNames);
     }
   });
 
@@ -352,7 +407,6 @@ io.on('connection', (socket: Socket) => {
     }
   });
 });
-
 
 
 server.listen(4000, () => {
