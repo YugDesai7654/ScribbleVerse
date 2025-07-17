@@ -266,26 +266,42 @@ io.on('connection', (socket: Socket) => {
   // Refactor endDrawingTurn: only host draws, so just advance round or end game
   socket.on('endDrawingTurn', () => {
     if (!currentRoom) return;
-    const state = gameState[currentRoom];
+    const roomId = currentRoom; // cache as string
+    const state = gameState[roomId];
     if (!state) return;
     // Only host can end the turn
     const hostId = state.drawingOrder[0];
     if (socket.id !== hostId) return;
-    // Mark host as having drawn this round
-    if (!state.drawnThisRound.includes(hostId)) {
-      state.drawnThisRound.push(hostId);
+    // Prevent double end for the same round
+    if (state.drawnThisRound.includes(hostId)) {
+      console.log('[DEBUG] endDrawingTurn ignored: host already ended this round');
+      return;
     }
+    // Mark host as having drawn this round
+    state.drawnThisRound.push(hostId);
+    console.log('[DEBUG] endDrawingTurn called. Current round:', state.currentRound, 'Total rounds:', state.rounds);
     // If all rounds are done, end game
     if (state.currentRound >= state.rounds) {
       state.gameStarted = false;
-      io.to(currentRoom).emit('gameOver');
+      io.to(roomId).emit('gameOver');
+      console.log('[DEBUG] Game over emitted.');
     } else {
-      // Advance to next round
-      state.currentRound += 1;
-      state.drawnThisRound = [];
-      io.to(currentRoom).emit('newRound', { round: state.currentRound });
-      io.to(currentRoom).emit('drawingTurn', { drawerId: hostId, round: state.currentRound });
-      startDrawingTurn(currentRoom, hostId, state.currentRound);
+      // Add 5 second delay before next round
+      let countdown = 5;
+      const interval = setInterval(() => {
+        io.to(roomId).emit('roundStartingSoon', { seconds: countdown });
+        countdown--;
+        if (countdown < 0) {
+          clearInterval(interval);
+          // Advance to next round
+          state.currentRound += 1;
+          state.drawnThisRound = [];
+          console.log('[DEBUG] Advancing to round', state.currentRound);
+          io.to(roomId).emit('newRound', { round: state.currentRound });
+          io.to(roomId).emit('drawingTurn', { drawerId: hostId, round: state.currentRound });
+          startDrawingTurn(roomId, hostId, state.currentRound);
+        }
+      }, 1000);
     }
   });
 

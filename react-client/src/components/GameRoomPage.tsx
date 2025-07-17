@@ -31,6 +31,7 @@ export default function GameRoomPage() {
   const [showWordOptions, setShowWordOptions] = useState(false);
   const [displayWord, setDisplayWord] = useState<string>('');
   const listenersCleanupRef = useRef<(() => void) | null>(null);
+  const [roundCountdown, setRoundCountdown] = useState<number | null>(null);
 
   useEffect(() => {
     if (!roomId || !name) return;
@@ -68,10 +69,15 @@ export default function GameRoomPage() {
         setTimePerRound(data.timePerRound);
         setCurrentRound(1);
       });
+      socket.on('roundStartingSoon', ({ seconds }) => {
+        setRoundCountdown(seconds);
+        setDisplayWord(''); // Clear previous round's word/placeholder
+      });
       socket.on('drawingTurn', ({ drawerId, round }) => {
         setDrawerId(drawerId);
-        setCurrentRound(round);
+        setCurrentRound(round); // Only update currentRound here
         setTimer(timePerRound);
+        setRoundCountdown(null); // Hide countdown when round actually starts
         console.log('[DEBUG] drawingTurn event:', { drawerId, round, socketId: socket.id });
         if (timerRef.current) clearInterval(timerRef.current);
         timerRef.current = setInterval(() => {
@@ -88,7 +94,7 @@ export default function GameRoomPage() {
         }, 1000);
       });
       socket.on('newRound', ({ round }) => {
-        setCurrentRound(round);
+        // setCurrentRound(round); // Removed to prevent out-of-sync round display
       });
       socket.on('gameOver', () => {
         setGameStarted(false);
@@ -104,14 +110,16 @@ export default function GameRoomPage() {
       };
       socket.on('drawing', handleDrawing);
       socket.on('wordOptions', ({ options, round }) => {
-        console.log('[DEBUG] wordOptions event:', { options, round, socketId, drawerId, isDrawer: drawerId === socketId });
+        // Use socket.id directly for drawer check and debug
+        console.log('[DEBUG] wordOptions event:', { options, round, socketId: socket.id, drawerId, isDrawer: drawerId === socket.id });
         setWordOptions(options);
         setShowWordOptions(true);
         setSelectedWord(null);
         setDisplayWord('');
       });
       socket.on('roundStart', ({ word, isDrawer, round }) => {
-        console.log('[DEBUG] roundStart event:', { word, isDrawer, round, socketId, drawerId, isDrawerFlag: drawerId === socketId });
+        // Use socket.id directly for drawer check and debug
+        console.log('[DEBUG] roundStart event:', { word, isDrawer, round, socketId: socket.id, drawerId, isDrawerFlag: drawerId === socket.id });
         setShowWordOptions(false);
         setWordOptions(null);
         setSelectedWord(null);
@@ -131,6 +139,7 @@ export default function GameRoomPage() {
         socket.off('drawing', handleDrawing);
         socket.off('wordOptions');
         socket.off('roundStart');
+        socket.off('roundStartingSoon');
       };
       listenersCleanupRef.current = cleanup;
       return cleanup;
@@ -203,7 +212,7 @@ export default function GameRoomPage() {
   };
 
   const isHost = hostName === name;
-  const isDrawer = drawerId === socketId;
+  const isDrawer = drawerId === socket.id;
   const drawerName = players.find(p => p.id === drawerId)?.name || '...';
 
   return (
@@ -323,6 +332,11 @@ export default function GameRoomPage() {
             </button>
           )}
           {gameStarted && <div className="text-green-600 text-center mt-4">Game has started!</div>}
+          {roundCountdown !== null && (
+            <div className="text-2xl font-bold text-orange-600 text-center my-4">
+              Next round starts in {roundCountdown} second{roundCountdown === 1 ? '' : 's'}...
+            </div>
+          )}
         </main>
       </div>
     </div>
