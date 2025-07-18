@@ -30,12 +30,10 @@ body {
   background: #ffedd2;
 }
 
-/* Smooth animations */
-* {
+    * {
   transition: all 0.3s ease;
 }
 
-/* Button hover effects */
 button {
   position: relative;
   overflow: hidden;
