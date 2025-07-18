@@ -217,20 +217,23 @@ io.on('connection', (socket: Socket) => {
         io.to(roomId).emit('chatMessage', { user: 'System', text: `The word was: ${word}`, timestamp: Date.now() });
     }
 
+    // Check for game over BEFORE starting the next round countdown
+    if (state.currentRound >= state.rounds) {
+        state.gameStarted = false;
+        // Calculate final scores and emit 'gameOver'
+        const finalScores = Object.entries(playerPoints[roomId])
+            .map(([name, score]) => ({ name, score }))
+            .sort((a, b) => b.score - a.score); // Sort from highest to lowest
+        io.to(roomId).emit('gameOver', { scores: finalScores });
+        return; // Stop the function here
+    }
+
     let countdown = 5;
     const interval = setInterval(() => {
       io.to(roomId).emit('roundStartingSoon', { seconds: countdown });
       countdown--;
       if (countdown < 0) {
         clearInterval(interval);
-
-        // Check for game over before advancing round
-        if (state.currentRound >= state.rounds) {
-            state.gameStarted = false;
-            io.to(roomId).emit('gameOver');
-            return;
-        }
-
         // Advance to next round
         state.currentRound += 1;
         state.drawnThisRound = [];
@@ -239,7 +242,8 @@ io.on('connection', (socket: Socket) => {
         startDrawingTurn(roomId, hostId, state.currentRound);
       }
     }, 1000);
-  }
+}
+
 
   function handleWordChosen(roomId: string, drawerId: string, word: string, round: number) {
     if (wordState[roomId].currentWord) return; // Prevent choosing twice
@@ -315,7 +319,7 @@ io.on('connection', (socket: Socket) => {
       startDrawingTurn(roomId, hostPlayer.id, 1);
     }
   });
-  
+
   socket.on('endDrawingTurn', () => {
     if (!currentRoom) return;
     const roomId = currentRoom;
@@ -347,10 +351,10 @@ io.on('connection', (socket: Socket) => {
         delete chatHistory[currentRoom];
         delete playerPoints[currentRoom];
       } else {
-          // If the host disconnects, end the game
-          if (disconnectedPlayer && gameState[currentRoom] && disconnectedPlayer.id === gameState[currentRoom].drawingOrder[0]) {
-             io.to(currentRoom).emit('gameOver');
-             io.to(currentRoom).emit('chatMessage', { user: 'System', text: 'Host has disconnected. Game over.', timestamp: Date.now() });
+          // If the host disconnects, end the game for everyone
+          if (disconnectedPlayer && gameState[currentRoom]?.gameStarted && disconnectedPlayer.id === gameState[currentRoom].drawingOrder[0]) {
+             // Let clients know the game ended because the host left
+             io.to(currentRoom).emit('gameOver', { scores: [], reason: 'Host has disconnected. Game over.' });
              gameState[currentRoom].gameStarted = false;
           }
 

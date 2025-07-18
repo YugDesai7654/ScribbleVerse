@@ -4,7 +4,9 @@ import { useState, useEffect, useRef } from 'react';
 import socket from '../socket';
 import DrawingCanvas, { type DrawLine } from './DrawingCanvas';
 import { motion, AnimatePresence } from 'framer-motion';
-import { LogOut, Send, Users, Clock, Edit } from 'lucide-react';
+import { LogOut, Send, Users, Clock, Edit, Trophy } from 'lucide-react';
+
+type Score = { name: string; score: number };
 
 export default function GameRoomPage() {
   const { roomId } = useParams();
@@ -30,6 +32,7 @@ export default function GameRoomPage() {
   const [displayWord, setDisplayWord] = useState<string>('');
   const [roundCountdown, setRoundCountdown] = useState<number | null>(null);
   const [points, setPoints] = useState<{ [name: string]: number }>({});
+  const [gameOverInfo, setGameOverInfo] = useState<{ scores: Score[]; reason?: string } | null>(null);
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timePerRoundRef = useRef(timePerRound);
@@ -68,10 +71,11 @@ export default function GameRoomPage() {
 
     socket.on('gameStarted', (data) => {
       setGameStarted(true);
+      setGameOverInfo(null); // Clear previous game over screen
       setTotalRounds(data.rounds);
-      setTimePerRound(data.timePerRound); // This updates state and the ref for the timer
+      setTimePerRound(data.timePerRound); 
       setCurrentRound(1);
-      setPoints({}); // Reset points at the start of a new game
+      setPoints({}); 
     });
     
     socket.on('roundStartingSoon', ({ seconds }) => {
@@ -82,9 +86,9 @@ export default function GameRoomPage() {
     socket.on('drawingTurn', ({ drawerId, round }) => {
       setDrawerId(drawerId);
       setCurrentRound(round);
-      setTimer(timePerRoundRef.current); // Use ref to get the correct, latest time
+      setTimer(timePerRoundRef.current); 
       setRoundCountdown(null);
-      setDrawLines([]); // Clear canvas for new turn
+      setDrawLines([]); 
       
       if (timerRef.current) clearInterval(timerRef.current);
       timerRef.current = setInterval(() => {
@@ -101,15 +105,12 @@ export default function GameRoomPage() {
       }, 1000);
     });
 
-    socket.on('gameOver', () => {
+    socket.on('gameOver', (data: { scores: Score[]; reason?: string }) => {
       setGameStarted(false);
       setDrawerId(null);
       if (timerRef.current) clearInterval(timerRef.current);
-      // Find winner
-      const winner = Object.entries(points).sort((a, b) => b[1] - a[1])[0];
-      const winnerName = winner ? winner[0] : 'No one';
-      const winnerPoints = winner ? winner[1] : 0;
-      alert(`Game Over! Winner is ${winnerName} with ${winnerPoints} points!`);
+      setTimer(0);
+      setGameOverInfo(data); // Store final scores to show modal
     });
 
     socket.on('chatHistory', (history) => setChatMessages(history));
@@ -282,7 +283,7 @@ export default function GameRoomPage() {
                 {isDrawer ? `Your word is: ${displayWord}` : displayWord}
               </span>
             )}
-             {!gameStarted && (
+             {!gameStarted && !gameOverInfo && (
                  <span className="text-xl font-bold tracking-widest text-[#ffedd2]/70">Waiting for host to start the game...</span>
              )}
           </div>
@@ -329,7 +330,7 @@ export default function GameRoomPage() {
 
        {/* Modals and Overlays */}
         <AnimatePresence>
-            {!gameStarted && isHost && (
+            {!gameStarted && isHost && !gameOverInfo &&(
                  <motion.div
                     className="absolute inset-0 bg-black/60 flex items-center justify-center"
                     initial={{ opacity: 0 }}
@@ -368,6 +369,60 @@ export default function GameRoomPage() {
                        <p className='text-xl mt-4 text-[#ffedd2]'>Get Ready!</p>
                     </div>
                  </motion.div>
+            )}
+            {/* NEW: Game Over Modal */}
+            {gameOverInfo && (
+                <motion.div 
+                    className="absolute inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                >
+                    <motion.div 
+                        className="bg-[#1f1f1f] p-8 rounded-2xl text-center border border-[#3e3e3e] w-full max-w-md"
+                        initial={{ scale: 0.7, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        transition={{ delay: 0.2, duration: 0.4 }}
+                    >
+                        <h2 className="text-5xl font-bold mb-4 text-[#f4d03f]" style={{ fontFamily: "Kalam, cursive" }}>Game Over!</h2>
+                        
+                        {gameOverInfo.reason ? (
+                            <p className="text-xl text-red-400 mt-6">{gameOverInfo.reason}</p>
+                        ) : (
+                            <>
+                                <div className="mb-6 mt-4">
+                                    <Trophy className="w-24 h-24 text-yellow-400 mx-auto" />
+                                    <p className="text-xl mt-2">Winner</p>
+                                    <p className="text-3xl font-bold text-white">{gameOverInfo.scores[0]?.name || 'No one'}</p>
+                                    <p className="text-lg text-yellow-400">{gameOverInfo.scores[0]?.score || 0} points</p>
+                                </div>
+                                <h3 className="text-2xl font-bold mb-4" style={{ fontFamily: "Kalam, cursive" }}>Final Scores</h3>
+                                <ul className="space-y-2 text-left max-h-48 overflow-y-auto pr-2">
+                                    {gameOverInfo.scores.map((player, index) => (
+                                        <li key={player.name} className={`flex justify-between items-center p-3 rounded-lg ${index === 0 ? 'bg-yellow-400/20 border border-yellow-400' : 'bg-[#282828]'}`}>
+                                            <span className="font-semibold text-lg flex items-center gap-2">
+                                                {index === 0 && <Trophy className="w-5 h-5 text-yellow-400"/>}
+                                                {index === 1 && <Trophy className="w-5 h-5 text-gray-400"/>}
+                                                {index === 2 && <Trophy className="w-5 h-5 text-orange-400"/>}
+                                                {index > 2 && <span className="w-5 text-center">{index + 1}</span>}
+                                                {player.name}
+                                            </span>
+                                            <span className="font-bold text-purple-400">{player.score} points</span>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </>
+                        )}
+                        <motion.button 
+                            onClick={handleLeaveRoom} 
+                            className="mt-8 bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-8 rounded-full transition-colors"
+                            whileHover={{ scale: 1.05 }}
+                            whileTap={{ scale: 0.95 }}
+                        >
+                            Leave Room
+                        </motion.button>
+                    </motion.div>
+                </motion.div>
             )}
         </AnimatePresence>
     </div>
