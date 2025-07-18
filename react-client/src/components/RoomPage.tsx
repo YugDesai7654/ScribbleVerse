@@ -1,7 +1,6 @@
 "use client"
 import { useNavigate } from "react-router-dom"
-// Import "memo" here
-import React, { useState, useRef, memo } from "react" 
+import React, { useState, useRef, memo } from "react"
 import { io } from "socket.io-client"
 import { motion, AnimatePresence } from "framer-motion"
 import { Users, PlusCircle, Paintbrush, Trophy } from "lucide-react"
@@ -277,7 +276,7 @@ export default function RoomPage() {
 
           {/* The Door */}
           <motion.div
-            className="absolute inset-8 origin-left"
+            className="absolute inset-8 origin-left z-10"
             style={{ transformStyle: "preserve-3d" }}
             animate={{ rotateY: isEntering ? -130 : 0 }}
             transition={{ duration: 1.5, ease: [0.6, 0.01, -0.05, 0.9] }}
@@ -306,6 +305,7 @@ export default function RoomPage() {
               {/* Door Content */}
               <motion.div
                 className="p-8 h-full flex flex-col justify-center"
+                style={{ transform: 'translateZ(1px)' }} // <-- THE FIX IS HERE
                 animate={{ opacity: isEntering ? 0 : 1 }}
                 transition={{ duration: 0.3 }}
               >
