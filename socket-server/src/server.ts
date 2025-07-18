@@ -157,9 +157,19 @@ io.on('connection', (socket: Socket) => {
   // Handle chat messages
   socket.on('chatMessage', ({ roomId, user, text }: { roomId: string; user: string; text: string }) => {
     if (!roomId || !user || !text) return;
+    // Prevent the drawer from sending chat messages
+    const state = gameState[roomId];
+    if (state) {
+      const currentDrawerIndex = state.drawnThisRound.length;
+      const currentDrawerId = state.drawingOrder[currentDrawerIndex];
+      if (socket.id === currentDrawerId) {
+        // Optionally, send an error back to the drawer
+        socket.emit('chatError', { message: 'Drawer cannot send chat messages during their turn.' });
+        return;
+      }
+    }
     // Check for correct guess
     const currentWord = wordState[roomId]?.currentWord;
-    const state = gameState[roomId];
     if (currentWord && state && text.trim().toLowerCase() === currentWord.trim().toLowerCase()) {
       // Only reward first correct guess per user per round
       if (!correctGuessers[roomId]) correctGuessers[roomId] = new Set();
