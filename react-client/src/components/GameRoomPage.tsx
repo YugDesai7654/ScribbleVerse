@@ -1,9 +1,10 @@
-
 'use client'
 import { useNavigate, useParams, Navigate } from 'react-router-dom';
 import { useState, useEffect, useRef } from 'react';
 import socket from '../socket';
 import DrawingCanvas, { type DrawLine } from './DrawingCanvas';
+import { motion, AnimatePresence } from 'framer-motion';
+import { LogOut, Send, Users, Clock, Edit } from 'lucide-react';
 
 export default function GameRoomPage() {
   const { roomId } = useParams();
@@ -13,7 +14,6 @@ export default function GameRoomPage() {
   const [players, setPlayers] = useState<{ id: string; name: string }[]>([]);
   const [hostName, setHostName] = useState<string>('');
   const [gameStarted, setGameStarted] = useState(false);
-  // const nameRef = useRef<HTMLInputElement>(null);
   const [chatMessages, setChatMessages] = useState<{ user: string; text: string; timestamp: number; correct?: boolean }[]>([]);
   const [chatInput, setChatInput] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -22,7 +22,6 @@ export default function GameRoomPage() {
   const [totalRounds, setTotalRounds] = useState(3);
   const [timePerRound, setTimePerRound] = useState(60);
   const [drawerId, setDrawerId] = useState<string | null>(null);
-  // const [drawingOrder, setDrawingOrder] = useState<string[]>([]);
   const [timer, setTimer] = useState<number>(60);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [socketId, setSocketId] = useState<string>('');
@@ -37,18 +36,14 @@ export default function GameRoomPage() {
   useEffect(() => {
     if (!roomId || !name) return;
 
-    // Set socketId immediately if already connected
     if (socket.connected) {
       setSocketId(socket.id || '');
-      console.log('[DEBUG] socket.connected on mount, socket.id:', socket.id);
     }
 
-    // Attach all listeners
     let listenersAttached = false;
     function attachListeners() {
       if (listenersAttached) return listenersCleanupRef.current;
       listenersAttached = true;
-      // Listen for join success/error
       const handleJoinSuccess = () => {
         setJoined(true);
         localStorage.setItem('roomId', roomId || '');
@@ -72,14 +67,13 @@ export default function GameRoomPage() {
       });
       socket.on('roundStartingSoon', ({ seconds }) => {
         setRoundCountdown(seconds);
-        setDisplayWord(''); // Clear previous round's word/placeholder
+        setDisplayWord('');
       });
       socket.on('drawingTurn', ({ drawerId, round }) => {
         setDrawerId(drawerId);
-        setCurrentRound(round); // Only update currentRound here
+        setCurrentRound(round);
         setTimer(timePerRound);
-        setRoundCountdown(null); // Hide countdown when round actually starts
-        console.log('[DEBUG] drawingTurn event:', { drawerId, round, socketId: socket.id });
+        setRoundCountdown(null);
         if (timerRef.current) clearInterval(timerRef.current);
         timerRef.current = setInterval(() => {
           setTimer(prev => {
@@ -93,9 +87,6 @@ export default function GameRoomPage() {
             return prev - 1;
           });
         }, 1000);
-      });
-      socket.on('newRound', ({ round }) => {
-        // setCurrentRound(round); // Removed to prevent out-of-sync round display
       });
       socket.on('gameOver', () => {
         setGameStarted(false);
@@ -111,23 +102,20 @@ export default function GameRoomPage() {
       };
       socket.on('drawing', handleDrawing);
       socket.on('wordOptions', ({ options, round }) => {
-        // Use socket.id directly for drawer check and debug
-        console.log('[DEBUG] wordOptions event:', { options, round, socketId: socket.id, drawerId, isDrawer: drawerId === socket.id });
+        console.log('[DEBUG] wordOptions', options, round);
         setWordOptions(options);
         setShowWordOptions(true);
         setSelectedWord(null);
         setDisplayWord('');
       });
       socket.on('roundStart', ({ word, isDrawer, round }) => {
-        // Use socket.id directly for drawer check and debug
-        console.log('[DEBUG] roundStart event:', { word, isDrawer, round, socketId: socket.id, drawerId, isDrawerFlag: drawerId === socket.id });
+        console.log('[DEBUG] roundStart', word, isDrawer, round);
         setShowWordOptions(false);
         setWordOptions(null);
         setSelectedWord(null);
         setDisplayWord(word);
       });
       socket.on('pointsUpdate', (pts) => setPoints(pts));
-      // Clean up
       const cleanup = () => {
         socket.off('joinRoomSuccess', handleJoinSuccess);
         socket.off('joinError', handleJoinError);
@@ -150,13 +138,11 @@ export default function GameRoomPage() {
 
     attachListeners();
 
-    // Always emit joinRoom, either immediately or after connect
     if (socket.connected) {
       socket.emit('joinRoom', { roomId, name });
     } else {
       const handleConnectAndJoin = () => {
         setSocketId(socket.id || '');
-        console.log('[DEBUG] socket.connect event, socket.id:', socket.id);
         socket.emit('joinRoom', { roomId, name });
         socket.off('connect', handleConnectAndJoin);
       };
@@ -176,7 +162,6 @@ export default function GameRoomPage() {
   }, [roomId, name, timePerRound, navigate]);
 
   useEffect(() => {
-    // Scroll to bottom when new message arrives
     if (chatEndRef.current) {
       chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
@@ -219,41 +204,50 @@ export default function GameRoomPage() {
   const drawerName = players.find(p => p.id === drawerId)?.name || '...';
 
   return (
-    <div className="flex flex-col min-h-screen bg-gray-50">
-      {/* Header: Room, Points, Leave Room */}
-      <div className="flex items-center justify-between px-8 py-4 bg-white shadow">
-        <div className="text-xl font-bold text-blue-600">Room: {roomId}</div>
-        <button
+    <div className="flex flex-col min-h-screen bg-[#0d0d0d] text-[#ffedd2]">
+      <link href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap" rel="stylesheet" />
+      {/* Header */}
+      <header className="flex items-center justify-between px-8 py-4 bg-[#1f1f1f] border-b border-[#3e3e3e]">
+        <h1 className="text-2xl font-bold" style={{ fontFamily: "Kalam, cursive" }}>Room: {roomId}</h1>
+        <motion.button
           onClick={handleLeaveRoom}
-          className="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600 transition"
+          className="bg-red-500 text-white px-4 py-2 rounded-lg flex items-center gap-2"
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
         >
+          <LogOut className="w-5 h-5" />
           Leave Room
-        </button>
-      </div>
-      <div className="flex flex-1">
-        {/* Sidebar: Player List */}
-        <aside className="w-64 bg-white border-r p-4 flex flex-col">
-          <h3 className="text-lg font-semibold mb-2">Players</h3>
-          <ul className="flex-1 overflow-y-auto">
-            {players.map((p) => (
-              <li key={p.id} className="py-1">
-                {p.name} {p.name === hostName && <span className="text-xs text-blue-500">(Host)</span>}
-                {p.name === name && <span className="text-xs text-green-500"> (You)</span>}
-                <span className="ml-2 text-sm text-purple-700 font-bold">{points[p.name] || 0} pts</span>
-              </li>
-            ))}
+        </motion.button>
+      </header>
+      <div className="flex flex-1 p-8 gap-8">
+        {/* Sidebar */}
+        <aside className="w-72 bg-[#1f1f1f] border border-[#3e3e3e] rounded-2xl p-4 flex flex-col">
+          <h3 className="text-xl font-bold mb-4 flex items-center gap-2" style={{ fontFamily: "Kalam, cursive" }}><Users className="w-6 h-6"/> Players</h3>
+          <ul className="flex-1 overflow-y-auto space-y-2">
+            <AnimatePresence>
+                {players.map((p) => (
+                    <motion.li
+                        key={p.id}
+                        className="py-2 px-3 bg-[#282828] rounded-lg"
+                        initial={{ opacity: 0, x: -20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0, x: 20 }}
+                    >
+                        {p.name} {p.name === hostName && <span className="text-xs text-blue-400">(Host)</span>}
+                        {p.name === name && <span className="text-xs text-green-400"> (You)</span>}
+                        <span className="ml-2 text-sm text-purple-400 font-bold">{points[p.name] || 0} pts</span>
+                    </motion.li>
+                ))}
+            </AnimatePresence>
           </ul>
         </aside>
         {/* Main Area */}
-        <main className="flex-1 flex flex-col items-center justify-center p-8 gap-6">
-          <div className="w-full max-w-5xl flex flex-col md:flex-row gap-6">
-            {/* Drawing Area */}
-            <div className="flex-[2] h-[32rem] bg-gray-200 rounded-lg flex flex-col items-center justify-center mb-4 md:mb-0">
-              {/* Game Info */}
-              <div className="w-full flex justify-between items-center mb-2 px-2">
-                <div className="text-md font-semibold text-gray-700">Round: {currentRound} / {totalRounds}</div>
-                <div className="text-md font-semibold text-gray-700">Time Left: {timer}s</div>
-                <div className="text-md font-semibold text-gray-700">Drawer: {drawerName}</div>
+        <main className="flex-1 flex flex-col gap-6">
+          <div className="flex-[2] h-[32rem] bg-[#0d0d0d] rounded-2xl border border-[#3e3e3e] flex flex-col items-center justify-center p-4">
+              <div className="w-full flex justify-between items-center mb-2 px-2 text-[#ffedd2]/80">
+                  <div className="text-md font-semibold">Round: {currentRound} / {totalRounds}</div>
+                  <div className="text-md font-semibold flex items-center gap-1"><Clock className="w-4 h-4" /> {timer}s</div>
+                  <div className="text-md font-semibold flex items-center gap-1"><Edit className="w-4 h-4" /> {drawerName}</div>
               </div>
               <DrawingCanvas
                 width={700}
@@ -262,86 +256,115 @@ export default function GameRoomPage() {
                 remoteLines={drawLines}
                 canDraw={isDrawer && gameStarted}
               />
-              {!isDrawer && gameStarted && (
-                <div className="mt-2 text-blue-600 font-semibold">Wait for your turn to draw!</div>
-              )}
-            </div>
-            {/* Chat Area */}
-            <div className="w-full md:w-72 bg-white rounded-lg shadow p-4 flex flex-col h-[32rem]">
-              <div className="flex-1 overflow-y-auto mb-2 space-y-1">
-                {chatMessages.map((msg, idx) => (
-                  <div key={idx} className={`text-sm ${msg.correct ? 'text-green-600' : 'text-red-600'}`}>
-                    <span className="font-semibold text-blue-600">{msg.user}:</span> {msg.text}
-                  </div>
-                ))}
+          </div>
+           {/* Guess Word / Word to Draw */}
+          <div className="w-full h-24 flex flex-col items-center justify-center bg-[#1f1f1f] border border-[#3e3e3e] rounded-2xl">
+            {isDrawer && showWordOptions && wordOptions && (
+              <motion.div initial={{opacity: 0}} animate={{opacity: 1}} className="text-center">
+                <div className="mb-2 font-semibold">Choose a word to draw:</div>
+                <div className="flex gap-4 justify-center">
+                  {wordOptions.map((word) => (
+                    <motion.button
+                      key={word}
+                      className={`px-4 py-2 rounded-lg border font-bold transition ${selectedWord === word ? 'bg-[#ffedd2] text-[#0d0d0d]' : 'bg-[#282828] border-[#3e3e3e] hover:bg-[#ffedd2]/20'}`}
+                      onClick={() => handleWordSelect(word)}
+                      disabled={!!selectedWord}
+                      whileHover={{y: -2}}
+                    >
+                      {word}
+                    </motion.button>
+                  ))}
+                </div>
+              </motion.div>
+            )}
+            {displayWord && (
+              <span className="text-2xl font-bold tracking-widest" style={{ fontFamily: "Kalam, cursive" }}>
+                {isDrawer ? `Your word: ${displayWord}` : displayWord}
+              </span>
+            )}
+          </div>
+        </main>
+        {/* Chat Area */}
+        <aside className="w-80 bg-[#1f1f1f] border border-[#3e3e3e] rounded-2xl p-4 flex flex-col h-full">
+            <h3 className="text-xl font-bold mb-4" style={{ fontFamily: "Kalam, cursive" }}>Chat</h3>
+            <div className="flex-1 overflow-y-auto mb-2 pr-2 space-y-2">
+                <AnimatePresence initial={false}>
+                    {chatMessages.map((msg, idx) => (
+                      <motion.div
+                        key={idx}
+                        className={`text-sm ${msg.correct ? 'text-green-400' : 'text-[#ffedd2]/90'}`}
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.3 }}
+                      >
+                        <span className="font-semibold text-[#ffedd2]">{msg.user}:</span> {msg.text}
+                      </motion.div>
+                    ))}
+                </AnimatePresence>
                 <div ref={chatEndRef} />
-              </div>
-              <form className="flex gap-2" onSubmit={handleChatSubmit}>
+            </div>
+            <form className="flex gap-2" onSubmit={handleChatSubmit}>
                 <input
-                  className="flex-1 border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                  className="flex-1 bg-[#0d0d0d] border border-[#3e3e3e] rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#ffedd2] text-[#ffedd2]"
                   placeholder="Type a message..."
                   value={chatInput}
                   onChange={e => setChatInput(e.target.value)}
                   disabled={!joined}
                 />
-                <button
+                <motion.button
                   type="submit"
-                  className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition"
+                  className="bg-gradient-to-r from-[#ffedd2] to-[#f4d03f] text-[#0d0d0d] px-4 py-2 rounded-lg disabled:opacity-50"
                   disabled={!joined || !chatInput.trim()}
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
                 >
-                  Send
-                </button>
-              </form>
-            </div>
-          </div>
-          {/* Guess Word / Word to Draw */}
-          <div className="w-full max-w-2xl flex flex-col items-center justify-center">
-            {/* Word selection section for drawer */}
-            {isDrawer && showWordOptions && wordOptions && (
-              <div className="mb-4 p-4 bg-yellow-100 rounded shadow text-center">
-                <div className="mb-2 font-semibold">Choose a word to draw:</div>
-                <div className="flex gap-4 justify-center">
-                  {wordOptions.map((word) => (
-                    <button
-                      key={word}
-                      className={`px-4 py-2 rounded border font-bold transition ${selectedWord === word ? 'bg-blue-500 text-white' : 'bg-white hover:bg-blue-100'}`}
-                      onClick={() => handleWordSelect(word)}
-                      disabled={!!selectedWord}
-                    >
-                      {word}
-                    </button>
-                  ))}
-                </div>
-                {selectedWord && <div className="mt-2 text-green-600 font-semibold">You selected: {selectedWord}</div>}
-                {!selectedWord && <div className="mt-2 text-gray-600">You have 10 seconds to choose, or one will be picked for you.</div>}
-              </div>
-            )}
-            {/* Word/placeholder display for all players */}
-            {displayWord && (
-              <span className="text-lg font-semibold text-gray-700">{isDrawer ? `Your word: ${displayWord}` : displayWord}</span>
-            )}
-            {!showWordOptions && !displayWord && (
-              <span className="text-lg font-semibold text-gray-700">[Guess Word / Word to Draw Placeholder]</span>
-            )}
-          </div>
-          {/* Start Game Button (Host only) */}
-          {isHost && !gameStarted && (
-            <button
-              onClick={handleStartGame}
-              disabled={players.length < 2}
-              className="mt-4 bg-blue-600 text-white py-2 px-6 rounded hover:bg-blue-700 transition disabled:opacity-50"
-            >
-              Start Game
-            </button>
-          )}
-          {gameStarted && <div className="text-green-600 text-center mt-4">Game has started!</div>}
-          {roundCountdown !== null && (
-            <div className="text-2xl font-bold text-orange-600 text-center my-4">
-              Next round starts in {roundCountdown} second{roundCountdown === 1 ? '' : 's'}...
-            </div>
-          )}
-        </main>
+                  <Send className="w-5 h-5"/>
+                </motion.button>
+            </form>
+        </aside>
       </div>
+
+       {/* Modals and Overlays */}
+        <AnimatePresence>
+            {isHost && !gameStarted && (
+                 <motion.div
+                    className="absolute inset-0 bg-black/50 flex items-center justify-center"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                >
+                    <motion.div
+                        className="bg-[#1f1f1f] p-8 rounded-2xl text-center"
+                        initial={{ scale: 0.7 }}
+                        animate={{ scale: 1 }}
+                    >
+                        <h2 className="text-2xl font-bold mb-4">Ready to start?</h2>
+                        <motion.button
+                          onClick={handleStartGame}
+                          disabled={players.length < 2}
+                          className="mt-4 bg-gradient-to-r from-[#ffedd2] to-[#f4d03f] text-[#0d0d0d] font-bold py-3 px-8 rounded-full hover:shadow-lg hover:shadow-[#ffedd2]/20 transition disabled:opacity-50"
+                           whileHover={{ scale: 1.1 }}
+                           whileTap={{ scale: 0.9 }}
+                        >
+                          Start Game
+                        </motion.button>
+                         {players.length < 2 && <p className="text-sm text-red-400 mt-2">Need at least 2 players to start.</p>}
+                    </motion.div>
+                 </motion.div>
+            )}
+            {roundCountdown !== null && (
+                <motion.div
+                    className="absolute inset-0 bg-black/50 flex items-center justify-center"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                >
+                    <div className="text-4xl font-bold text-orange-500 text-center">
+                        Next round starts in {roundCountdown}...
+                    </div>
+                 </motion.div>
+            )}
+        </AnimatePresence>
     </div>
   );
 }
