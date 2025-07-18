@@ -2,11 +2,8 @@
 'use client'
 import { useNavigate, useParams, Navigate } from 'react-router-dom';
 import { useState, useEffect, useRef } from 'react';
-import { io } from 'socket.io-client';
+import socket from '../socket';
 import DrawingCanvas, { type DrawLine } from './DrawingCanvas';
-
-const SOCKET_URL = 'http://localhost:4000';
-const socket = io(SOCKET_URL, { autoConnect: false });
 
 export default function GameRoomPage() {
   const { roomId } = useParams();
@@ -17,7 +14,7 @@ export default function GameRoomPage() {
   const [hostName, setHostName] = useState<string>('');
   const [gameStarted, setGameStarted] = useState(false);
   // const nameRef = useRef<HTMLInputElement>(null);
-  const [chatMessages, setChatMessages] = useState<{ user: string; text: string; timestamp: number }[]>([]);
+  const [chatMessages, setChatMessages] = useState<{ user: string; text: string; timestamp: number; correct?: boolean }[]>([]);
   const [chatInput, setChatInput] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [drawLines, setDrawLines] = useState<DrawLine[]>([]);
@@ -29,98 +26,154 @@ export default function GameRoomPage() {
   const [timer, setTimer] = useState<number>(60);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [socketId, setSocketId] = useState<string>('');
+  const [wordOptions, setWordOptions] = useState<string[] | null>(null);
+  const [selectedWord, setSelectedWord] = useState<string | null>(null);
+  const [showWordOptions, setShowWordOptions] = useState(false);
+  const [displayWord, setDisplayWord] = useState<string>('');
+  const listenersCleanupRef = useRef<(() => void) | null>(null);
+  const [roundCountdown, setRoundCountdown] = useState<number | null>(null);
+  const [points, setPoints] = useState<{ [name: string]: number }>({});
 
   useEffect(() => {
     if (!roomId || !name) return;
-    socket.connect();
-    socket.emit('joinRoom', { roomId, name });
 
-    // Store the actual socket id after connection
-    const handleConnect = () => {
+    // Set socketId immediately if already connected
+    if (socket.connected) {
       setSocketId(socket.id || '');
-    };
-    socket.on('connect', handleConnect);
+      console.log('[DEBUG] socket.connected on mount, socket.id:', socket.id);
+    }
 
-    // Listen for join success/error
-    const handleJoinSuccess = () => {
-      setJoined(true);
-      localStorage.setItem('roomId', roomId);
-    };
-    const handleJoinError = (data: { message: string }) => {
-      alert(data.message); // Or set an error state and show in UI
-      socket.disconnect();
-      navigate('/room');
-    };
-
-    socket.on('joinRoomSuccess', handleJoinSuccess);
-    socket.on('joinError', handleJoinError);
-
-    // Other listeners
-    socket.on('playerList', (data) => {
-      setPlayers(data.players);
-      setHostName(data.hostName);
-    });
-    socket.on('gameStarted', (data) => {
-      setGameStarted(true);
-      setTotalRounds(data.rounds);
-      setTimePerRound(data.timePerRound);
-      // setDrawingOrder(data.drawingOrder);
-      setCurrentRound(1);
-    });
-    socket.on('drawingTurn', ({ drawerId, round }) => {
-      setDrawerId(drawerId);
-      setCurrentRound(round);
-      setTimer(timePerRound);
-      if (timerRef.current) clearInterval(timerRef.current);
-      timerRef.current = setInterval(() => {
-        setTimer(prev => {
-          if (prev <= 1) {
-            clearInterval(timerRef.current!);
-            // Only the drawer emits endDrawingTurn
-            if (drawerId === socket.id) {
-              socket.emit('endDrawingTurn');
+    // Attach all listeners
+    let listenersAttached = false;
+    function attachListeners() {
+      if (listenersAttached) return listenersCleanupRef.current;
+      listenersAttached = true;
+      // Listen for join success/error
+      const handleJoinSuccess = () => {
+        setJoined(true);
+        localStorage.setItem('roomId', roomId || '');
+      };
+      const handleJoinError = (data: { message: string }) => {
+        alert(data.message);
+        socket.disconnect();
+        navigate('/room' as string);
+      };
+      socket.on('joinRoomSuccess', handleJoinSuccess);
+      socket.on('joinError', handleJoinError);
+      socket.on('playerList', (data) => {
+        setPlayers(data.players);
+        setHostName(data.hostName);
+      });
+      socket.on('gameStarted', (data) => {
+        setGameStarted(true);
+        setTotalRounds(data.rounds);
+        setTimePerRound(data.timePerRound);
+        setCurrentRound(1);
+      });
+      socket.on('roundStartingSoon', ({ seconds }) => {
+        setRoundCountdown(seconds);
+        setDisplayWord(''); // Clear previous round's word/placeholder
+      });
+      socket.on('drawingTurn', ({ drawerId, round }) => {
+        setDrawerId(drawerId);
+        setCurrentRound(round); // Only update currentRound here
+        setTimer(timePerRound);
+        setRoundCountdown(null); // Hide countdown when round actually starts
+        console.log('[DEBUG] drawingTurn event:', { drawerId, round, socketId: socket.id });
+        if (timerRef.current) clearInterval(timerRef.current);
+        timerRef.current = setInterval(() => {
+          setTimer(prev => {
+            if (prev <= 1) {
+              clearInterval(timerRef.current!);
+              if (drawerId === socket.id) {
+                socket.emit('endDrawingTurn');
+              }
+              return 0;
             }
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-    });
-    socket.on('newRound', ({ round }) => {
-      setCurrentRound(round);
-    });
-    socket.on('gameOver', () => {
-      setGameStarted(false);
-      setDrawerId(null);
-      setTimer(0);
-      if (timerRef.current) clearInterval(timerRef.current);
-      alert('Game Over!');
-    });
-    socket.on('chatHistory', (history) => setChatMessages(history));
-    socket.on('chatMessage', (msg) => setChatMessages((prev) => [...prev, msg]));
+            return prev - 1;
+          });
+        }, 1000);
+      });
+      socket.on('newRound', ({ round }) => {
+        // setCurrentRound(round); // Removed to prevent out-of-sync round display
+      });
+      socket.on('gameOver', () => {
+        setGameStarted(false);
+        setDrawerId(null);
+        setTimer(0);
+        if (timerRef.current) clearInterval(timerRef.current);
+        alert('Game Over!');
+      });
+      socket.on('chatHistory', (history) => setChatMessages(history));
+      socket.on('chatMessage', (msg) => setChatMessages((prev) => [...prev, msg]));
+      const handleDrawing = (line: DrawLine) => {
+        setDrawLines(prev => [...prev, line]);
+      };
+      socket.on('drawing', handleDrawing);
+      socket.on('wordOptions', ({ options, round }) => {
+        // Use socket.id directly for drawer check and debug
+        console.log('[DEBUG] wordOptions event:', { options, round, socketId: socket.id, drawerId, isDrawer: drawerId === socket.id });
+        setWordOptions(options);
+        setShowWordOptions(true);
+        setSelectedWord(null);
+        setDisplayWord('');
+      });
+      socket.on('roundStart', ({ word, isDrawer, round }) => {
+        // Use socket.id directly for drawer check and debug
+        console.log('[DEBUG] roundStart event:', { word, isDrawer, round, socketId: socket.id, drawerId, isDrawerFlag: drawerId === socket.id });
+        setShowWordOptions(false);
+        setWordOptions(null);
+        setSelectedWord(null);
+        setDisplayWord(word);
+      });
+      socket.on('pointsUpdate', (pts) => setPoints(pts));
+      // Clean up
+      const cleanup = () => {
+        socket.off('joinRoomSuccess', handleJoinSuccess);
+        socket.off('joinError', handleJoinError);
+        socket.off('playerList');
+        socket.off('gameStarted');
+        socket.off('drawingTurn');
+        socket.off('newRound');
+        socket.off('gameOver');
+        socket.off('chatHistory');
+        socket.off('chatMessage');
+        socket.off('drawing', handleDrawing);
+        socket.off('wordOptions');
+        socket.off('roundStart');
+        socket.off('roundStartingSoon');
+        socket.off('pointsUpdate');
+      };
+      listenersCleanupRef.current = cleanup;
+      return cleanup;
+    }
 
-    // Drawing: receive remote lines
-    const handleDrawing = (line: DrawLine) => {
-      setDrawLines(prev => [...prev, line]);
-    };
-    socket.on('drawing', handleDrawing);
+    attachListeners();
+
+    // Always emit joinRoom, either immediately or after connect
+    if (socket.connected) {
+      socket.emit('joinRoom', { roomId, name });
+    } else {
+      const handleConnectAndJoin = () => {
+        setSocketId(socket.id || '');
+        console.log('[DEBUG] socket.connect event, socket.id:', socket.id);
+        socket.emit('joinRoom', { roomId, name });
+        socket.off('connect', handleConnectAndJoin);
+      };
+      socket.on('connect', handleConnectAndJoin);
+      socket.connect();
+    }
 
     return () => {
-      socket.off('joinRoomSuccess', handleJoinSuccess);
-      socket.off('joinError', handleJoinError);
-      socket.off('playerList');
-      socket.off('gameStarted');
-      socket.off('drawingTurn');
-      socket.off('newRound');
-      socket.off('gameOver');
-      socket.off('chatHistory');
-      socket.off('chatMessage');
-      socket.off('drawing', handleDrawing);
-      socket.off('connect', handleConnect);
+      socket.off('connect');
+      if (listenersCleanupRef.current) {
+        listenersCleanupRef.current();
+        listenersCleanupRef.current = null;
+      }
       socket.disconnect();
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [roomId, name, timePerRound]);
+  }, [roomId, name, timePerRound, navigate]);
 
   useEffect(() => {
     // Scroll to bottom when new message arrives
@@ -155,8 +208,14 @@ export default function GameRoomPage() {
     setDrawLines(prev => [...prev, line]);
   };
 
+  const handleWordSelect = (word: string) => {
+    if (!roomId || !wordOptions || selectedWord) return;
+    setSelectedWord(word);
+    socket.emit('chooseWord', { roomId, word, round: currentRound });
+  };
+
   const isHost = hostName === name;
-  const isDrawer = drawerId === socketId;
+  const isDrawer = drawerId === socket.id;
   const drawerName = players.find(p => p.id === drawerId)?.name || '...';
 
   return (
@@ -164,7 +223,6 @@ export default function GameRoomPage() {
       {/* Header: Room, Points, Leave Room */}
       <div className="flex items-center justify-between px-8 py-4 bg-white shadow">
         <div className="text-xl font-bold text-blue-600">Room: {roomId}</div>
-        <div className="text-lg font-semibold">Points: <span className="text-green-600">[Points Placeholder]</span></div>
         <button
           onClick={handleLeaveRoom}
           className="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600 transition"
@@ -181,6 +239,7 @@ export default function GameRoomPage() {
               <li key={p.id} className="py-1">
                 {p.name} {p.name === hostName && <span className="text-xs text-blue-500">(Host)</span>}
                 {p.name === name && <span className="text-xs text-green-500"> (You)</span>}
+                <span className="ml-2 text-sm text-purple-700 font-bold">{points[p.name] || 0} pts</span>
               </li>
             ))}
           </ul>
@@ -211,7 +270,7 @@ export default function GameRoomPage() {
             <div className="w-full md:w-72 bg-white rounded-lg shadow p-4 flex flex-col h-[32rem]">
               <div className="flex-1 overflow-y-auto mb-2 space-y-1">
                 {chatMessages.map((msg, idx) => (
-                  <div key={idx} className="text-sm">
+                  <div key={idx} className={`text-sm ${msg.correct ? 'text-green-600' : 'text-red-600'}`}>
                     <span className="font-semibold text-blue-600">{msg.user}:</span> {msg.text}
                   </div>
                 ))}
@@ -236,8 +295,34 @@ export default function GameRoomPage() {
             </div>
           </div>
           {/* Guess Word / Word to Draw */}
-          <div className="w-full max-w-2xl flex items-center justify-center">
-            <span className="text-lg font-semibold text-gray-700">[Guess Word / Word to Draw Placeholder]</span>
+          <div className="w-full max-w-2xl flex flex-col items-center justify-center">
+            {/* Word selection section for drawer */}
+            {isDrawer && showWordOptions && wordOptions && (
+              <div className="mb-4 p-4 bg-yellow-100 rounded shadow text-center">
+                <div className="mb-2 font-semibold">Choose a word to draw:</div>
+                <div className="flex gap-4 justify-center">
+                  {wordOptions.map((word) => (
+                    <button
+                      key={word}
+                      className={`px-4 py-2 rounded border font-bold transition ${selectedWord === word ? 'bg-blue-500 text-white' : 'bg-white hover:bg-blue-100'}`}
+                      onClick={() => handleWordSelect(word)}
+                      disabled={!!selectedWord}
+                    >
+                      {word}
+                    </button>
+                  ))}
+                </div>
+                {selectedWord && <div className="mt-2 text-green-600 font-semibold">You selected: {selectedWord}</div>}
+                {!selectedWord && <div className="mt-2 text-gray-600">You have 10 seconds to choose, or one will be picked for you.</div>}
+              </div>
+            )}
+            {/* Word/placeholder display for all players */}
+            {displayWord && (
+              <span className="text-lg font-semibold text-gray-700">{isDrawer ? `Your word: ${displayWord}` : displayWord}</span>
+            )}
+            {!showWordOptions && !displayWord && (
+              <span className="text-lg font-semibold text-gray-700">[Guess Word / Word to Draw Placeholder]</span>
+            )}
           </div>
           {/* Start Game Button (Host only) */}
           {isHost && !gameStarted && (
@@ -250,6 +335,11 @@ export default function GameRoomPage() {
             </button>
           )}
           {gameStarted && <div className="text-green-600 text-center mt-4">Game has started!</div>}
+          {roundCountdown !== null && (
+            <div className="text-2xl font-bold text-orange-600 text-center my-4">
+              Next round starts in {roundCountdown} second{roundCountdown === 1 ? '' : 's'}...
+            </div>
+          )}
         </main>
       </div>
     </div>
