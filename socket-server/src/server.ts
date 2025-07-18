@@ -10,11 +10,13 @@ import { createRoom, joinRoom } from './api/room';
 connectDB();
 
 const app = express();
-app.use(cors({ origin: '*' }));
+const corsOrigin = process.env.CORS_ORIGIN ;
+// console.log(`CORS_ORIGIN: ${corsOrigin}`);
+app.use(cors({ origin: corsOrigin }));
 
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: '*' }
+  cors: { origin: corsOrigin }
 });
 
 type Player = { id: string; name: string };
@@ -365,7 +367,7 @@ io.on('connection', (socket: Socket) => {
   });
 });
 
-
-server.listen(4000, () => {
-  console.log('Socket.io server running on http://localhost:4000');
+const PORT = process.env.PORT;
+server.listen(PORT, () => {
+  console.log(`Socket.io server running on http://localhost:${PORT}`);
 });

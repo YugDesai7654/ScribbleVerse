@@ -177,7 +177,7 @@ function HeroSection() {
             whileTap={{ scale: 0.95 }}
           >
             <Play className="w-5 h-5" />
-            Start Playing Now
+            <a href="/room">Start Playing Now</a>
           </motion.button>
 
           <motion.button
