@@ -494,7 +494,7 @@ function Footer() {
         <div className="grid md:grid-cols-4 gap-8">
           <div>
             <h3 className="text-2xl font-bold text-[#ffedd2] mb-4" style={{ fontFamily: "Kalam, cursive" }}>
-              DrawGuess
+              ScribbleVerse
             </h3>
             <p className="text-[#ffedd2]/70">The ultimate real-time drawing and guessing game experience.</p>
           </div>
@@ -529,7 +529,7 @@ function Footer() {
                 </a>
               </li>
               <li>
-                <a href="#" className="hover:text-[#ffedd2] transition-colors">
+                <a href="mailto:yugd7654@gmail.com" className="hover:text-[#ffedd2] transition-colors">
                   Contact Us
                 </a>
               </li>
@@ -564,15 +564,16 @@ function Footer() {
         </div>
 
         <div className="border-t border-[#3e3e3e] mt-8 pt-8 text-center text-[#ffedd2]/70">
-          <p>&copy; 2024 DrawGuess. All rights reserved.</p>
+          <p>&copy; 2025 ScribbleVerse. All rights reserved.</p>
         </div>
       </div>
     </footer>
   )
 }
 
+
 // Main Component
-export default function LandingPage() {
+export default function ScribbleVerseLandingPage() {
   return (
     <div className="bg-[#0d0d0d] min-h-screen text-white">
       <link href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap" rel="stylesheet" />
