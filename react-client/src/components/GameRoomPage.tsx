@@ -23,143 +23,140 @@ export default function GameRoomPage() {
   const [timePerRound, setTimePerRound] = useState(60);
   const [drawerId, setDrawerId] = useState<string | null>(null);
   const [timer, setTimer] = useState<number>(60);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [socketId, setSocketId] = useState<string>('');
   const [wordOptions, setWordOptions] = useState<string[] | null>(null);
   const [selectedWord, setSelectedWord] = useState<string | null>(null);
   const [showWordOptions, setShowWordOptions] = useState(false);
   const [displayWord, setDisplayWord] = useState<string>('');
-  const listenersCleanupRef = useRef<(() => void) | null>(null);
   const [roundCountdown, setRoundCountdown] = useState<number | null>(null);
   const [points, setPoints] = useState<{ [name: string]: number }>({});
 
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timePerRoundRef = useRef(timePerRound);
+  timePerRoundRef.current = timePerRound;
+
+  // Effect for socket connection and all event listeners
   useEffect(() => {
-    if (!roomId || !name) return;
+    if (!roomId || !name) {
+      navigate('/room');
+      return;
+    }
 
-    if (socket.connected) {
+    // --- Connection ---
+    socket.connect();
+    socket.on('connect', () => {
       setSocketId(socket.id || '');
-    }
-
-    let listenersAttached = false;
-    function attachListeners() {
-      if (listenersAttached) return listenersCleanupRef.current;
-      listenersAttached = true;
-      const handleJoinSuccess = () => {
-        setJoined(true);
-        localStorage.setItem('roomId', roomId || '');
-      };
-      const handleJoinError = (data: { message: string }) => {
-        alert(data.message);
-        socket.disconnect();
-        navigate('/room' as string);
-      };
-      socket.on('joinRoomSuccess', handleJoinSuccess);
-      socket.on('joinError', handleJoinError);
-      socket.on('playerList', (data) => {
-        setPlayers(data.players);
-        setHostName(data.hostName);
-      });
-      socket.on('gameStarted', (data) => {
-        setGameStarted(true);
-        setTotalRounds(data.rounds);
-        setTimePerRound(data.timePerRound);
-        setCurrentRound(1);
-      });
-      socket.on('roundStartingSoon', ({ seconds }) => {
-        setRoundCountdown(seconds);
-        setDisplayWord('');
-      });
-      socket.on('drawingTurn', ({ drawerId, round }) => {
-        setDrawerId(drawerId);
-        setCurrentRound(round);
-        setTimer(timePerRound);
-        setRoundCountdown(null);
-        if (timerRef.current) clearInterval(timerRef.current);
-        timerRef.current = setInterval(() => {
-          setTimer(prev => {
-            if (prev <= 1) {
-              clearInterval(timerRef.current!);
-              if (drawerId === socket.id) {
-                socket.emit('endDrawingTurn');
-              }
-              return 0;
-            }
-            return prev - 1;
-          });
-        }, 1000);
-      });
-      socket.on('gameOver', () => {
-        setGameStarted(false);
-        setDrawerId(null);
-        setTimer(0);
-        if (timerRef.current) clearInterval(timerRef.current);
-        alert('Game Over!');
-      });
-      socket.on('chatHistory', (history) => setChatMessages(history));
-      socket.on('chatMessage', (msg) => setChatMessages((prev) => [...prev, msg]));
-      const handleDrawing = (line: DrawLine) => {
-        setDrawLines(prev => [...prev, line]);
-      };
-      socket.on('drawing', handleDrawing);
-      socket.on('wordOptions', ({ options, round }) => {
-        console.log('[DEBUG] wordOptions', options, round);
-        setWordOptions(options);
-        setShowWordOptions(true);
-        setSelectedWord(null);
-        setDisplayWord('');
-      });
-      socket.on('roundStart', ({ word, isDrawer, round }) => {
-        console.log('[DEBUG] roundStart', word, isDrawer, round);
-        setShowWordOptions(false);
-        setWordOptions(null);
-        setSelectedWord(null);
-        setDisplayWord(word);
-      });
-      socket.on('pointsUpdate', (pts) => setPoints(pts));
-      const cleanup = () => {
-        socket.off('joinRoomSuccess', handleJoinSuccess);
-        socket.off('joinError', handleJoinError);
-        socket.off('playerList');
-        socket.off('gameStarted');
-        socket.off('drawingTurn');
-        socket.off('newRound');
-        socket.off('gameOver');
-        socket.off('chatHistory');
-        socket.off('chatMessage');
-        socket.off('drawing', handleDrawing);
-        socket.off('wordOptions');
-        socket.off('roundStart');
-        socket.off('roundStartingSoon');
-        socket.off('pointsUpdate');
-      };
-      listenersCleanupRef.current = cleanup;
-      return cleanup;
-    }
-
-    attachListeners();
-
-    if (socket.connected) {
       socket.emit('joinRoom', { roomId, name });
-    } else {
-      const handleConnectAndJoin = () => {
-        setSocketId(socket.id || '');
-        socket.emit('joinRoom', { roomId, name });
-        socket.off('connect', handleConnectAndJoin);
-      };
-      socket.on('connect', handleConnectAndJoin);
-      socket.connect();
-    }
+    });
 
+    // --- Event Listeners ---
+    socket.on('joinRoomSuccess', () => {
+      setJoined(true);
+      localStorage.setItem('roomId', roomId || '');
+    });
+
+    socket.on('joinError', (data: { message: string }) => {
+      alert(data.message);
+      socket.disconnect();
+      navigate('/room');
+    });
+
+    socket.on('playerList', (data) => {
+      setPlayers(data.players);
+      setHostName(data.hostName);
+    });
+
+    socket.on('gameStarted', (data) => {
+      setGameStarted(true);
+      setTotalRounds(data.rounds);
+      setTimePerRound(data.timePerRound); // This updates state and the ref for the timer
+      setCurrentRound(1);
+      setPoints({}); // Reset points at the start of a new game
+    });
+    
+    socket.on('roundStartingSoon', ({ seconds }) => {
+      setRoundCountdown(seconds);
+      setDisplayWord('');
+    });
+
+    socket.on('drawingTurn', ({ drawerId, round }) => {
+      setDrawerId(drawerId);
+      setCurrentRound(round);
+      setTimer(timePerRoundRef.current); // Use ref to get the correct, latest time
+      setRoundCountdown(null);
+      setDrawLines([]); // Clear canvas for new turn
+      
+      if (timerRef.current) clearInterval(timerRef.current);
+      timerRef.current = setInterval(() => {
+        setTimer(prev => {
+          if (prev <= 1) {
+            clearInterval(timerRef.current!);
+            if (drawerId === socket.id) {
+              socket.emit('endDrawingTurn');
+            }
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    });
+
+    socket.on('gameOver', () => {
+      setGameStarted(false);
+      setDrawerId(null);
+      if (timerRef.current) clearInterval(timerRef.current);
+      // Find winner
+      const winner = Object.entries(points).sort((a, b) => b[1] - a[1])[0];
+      const winnerName = winner ? winner[0] : 'No one';
+      const winnerPoints = winner ? winner[1] : 0;
+      alert(`Game Over! Winner is ${winnerName} with ${winnerPoints} points!`);
+    });
+
+    socket.on('chatHistory', (history) => setChatMessages(history));
+    socket.on('chatMessage', (msg) => setChatMessages((prev) => [...prev, msg]));
+
+    const handleDrawing = (line: DrawLine) => {
+      setDrawLines(prev => [...prev, line]);
+    };
+    socket.on('drawing', handleDrawing);
+
+    socket.on('wordOptions', ({ options, round }) => {
+      setWordOptions(options);
+      setShowWordOptions(true);
+      setSelectedWord(null);
+      setDisplayWord('');
+    });
+    
+    socket.on('roundStart', ({ word, isDrawer, round }) => {
+      setShowWordOptions(false);
+      setWordOptions(null);
+      setSelectedWord(null);
+      setDisplayWord(word);
+    });
+
+    socket.on('pointsUpdate', (pts) => setPoints(pts));
+
+    // --- Cleanup on component unmount ---
     return () => {
       socket.off('connect');
-      if (listenersCleanupRef.current) {
-        listenersCleanupRef.current();
-        listenersCleanupRef.current = null;
-      }
+      socket.off('joinRoomSuccess');
+      socket.off('joinError');
+      socket.off('playerList');
+      socket.off('gameStarted');
+      socket.off('drawingTurn');
+      socket.off('gameOver');
+      socket.off('chatHistory');
+      socket.off('chatMessage');
+      socket.off('drawing', handleDrawing);
+      socket.off('wordOptions');
+      socket.off('roundStart');
+      socket.off('roundStartingSoon');
+      socket.off('pointsUpdate');
+      
       socket.disconnect();
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [roomId, name, timePerRound, navigate]);
+  }, [roomId, name, navigate]);
 
   useEffect(() => {
     if (chatEndRef.current) {
@@ -183,7 +180,7 @@ export default function GameRoomPage() {
 
   const handleChatSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!chatInput.trim()) return;
+    if (!chatInput.trim() || drawerId === socket.id) return;
     socket.emit('chatMessage', { roomId, user: name, text: chatInput });
     setChatInput('');
   };
@@ -228,14 +225,17 @@ export default function GameRoomPage() {
                 {players.map((p) => (
                     <motion.li
                         key={p.id}
-                        className="py-2 px-3 bg-[#282828] rounded-lg"
+                        className="py-2 px-3 bg-[#282828] rounded-lg flex justify-between items-center"
                         initial={{ opacity: 0, x: -20 }}
                         animate={{ opacity: 1, x: 0 }}
                         exit={{ opacity: 0, x: 20 }}
                     >
-                        {p.name} {p.name === hostName && <span className="text-xs text-blue-400">(Host)</span>}
-                        {p.name === name && <span className="text-xs text-green-400"> (You)</span>}
-                        <span className="ml-2 text-sm text-purple-400 font-bold">{points[p.name] || 0} pts</span>
+                        <span>
+                            {p.name} {p.name === hostName && <span className="text-xs text-blue-400">(Host)</span>}
+                            {p.id === socketId && <span className="text-xs text-green-400"> (You)</span>}
+                            {p.id === drawerId && <Edit className="w-4 h-4 inline-block ml-1 text-orange-400" />}
+                        </span>
+                        <span className="text-sm text-purple-400 font-bold">{points[p.name] || 0} pts</span>
                     </motion.li>
                 ))}
             </AnimatePresence>
@@ -247,21 +247,21 @@ export default function GameRoomPage() {
               <div className="w-full flex justify-between items-center mb-2 px-2 text-[#ffedd2]/80">
                   <div className="text-md font-semibold">Round: {currentRound} / {totalRounds}</div>
                   <div className="text-md font-semibold flex items-center gap-1"><Clock className="w-4 h-4" /> {timer}s</div>
-                  <div className="text-md font-semibold flex items-center gap-1"><Edit className="w-4 h-4" /> {drawerName}</div>
+                  <div className="text-md font-semibold flex items-center gap-1"><Edit className="w-4 h-4" /> Drawing: {drawerName}</div>
               </div>
               <DrawingCanvas
                 width={700}
                 height={500}
                 onDrawLine={handleDrawLine}
                 remoteLines={drawLines}
-                canDraw={isDrawer && gameStarted}
+                canDraw={isDrawer && gameStarted && !showWordOptions}
               />
           </div>
            {/* Guess Word / Word to Draw */}
           <div className="w-full h-24 flex flex-col items-center justify-center bg-[#1f1f1f] border border-[#3e3e3e] rounded-2xl">
             {isDrawer && showWordOptions && wordOptions && (
               <motion.div initial={{opacity: 0}} animate={{opacity: 1}} className="text-center">
-                <div className="mb-2 font-semibold">Choose a word to draw:</div>
+                <div className="mb-2 font-semibold">Choose a word to draw (10s):</div>
                 <div className="flex gap-4 justify-center">
                   {wordOptions.map((word) => (
                     <motion.button
@@ -278,10 +278,13 @@ export default function GameRoomPage() {
               </motion.div>
             )}
             {displayWord && (
-              <span className="text-2xl font-bold tracking-widest" style={{ fontFamily: "Kalam, cursive" }}>
-                {isDrawer ? `Your word: ${displayWord}` : displayWord}
+              <span className="text-3xl font-bold tracking-widest" style={{ fontFamily: "Kalam, cursive" }}>
+                {isDrawer ? `Your word is: ${displayWord}` : displayWord}
               </span>
             )}
+             {!gameStarted && (
+                 <span className="text-xl font-bold tracking-widest text-[#ffedd2]/70">Waiting for host to start the game...</span>
+             )}
           </div>
         </main>
         {/* Chat Area */}
@@ -292,7 +295,7 @@ export default function GameRoomPage() {
                     {chatMessages.map((msg, idx) => (
                       <motion.div
                         key={idx}
-                        className={`text-sm ${msg.correct ? 'text-green-400' : 'text-[#ffedd2]/90'}`}
+                        className={`text-sm ${msg.correct ? 'text-green-400 font-bold' : 'text-[#ffedd2]/90'}`}
                         initial={{ opacity: 0, y: 20 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ duration: 0.3 }}
@@ -305,16 +308,16 @@ export default function GameRoomPage() {
             </div>
             <form className="flex gap-2" onSubmit={handleChatSubmit}>
                 <input
-                  className="flex-1 bg-[#0d0d0d] border border-[#3e3e3e] rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#ffedd2] text-[#ffedd2]"
-                  placeholder="Type a message..."
+                  className="flex-1 bg-[#0d0d0d] border border-[#3e3e3e] rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#ffedd2] text-[#ffedd2] disabled:opacity-50"
+                  placeholder={isDrawer ? "You can't chat while drawing" : "Type your guess..."}
                   value={chatInput}
                   onChange={e => setChatInput(e.target.value)}
-                  disabled={!joined}
+                  disabled={!joined || !gameStarted || isDrawer}
                 />
                 <motion.button
                   type="submit"
                   className="bg-gradient-to-r from-[#ffedd2] to-[#f4d03f] text-[#0d0d0d] px-4 py-2 rounded-lg disabled:opacity-50"
-                  disabled={!joined || !chatInput.trim()}
+                  disabled={!joined || !chatInput.trim() || !gameStarted || isDrawer}
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
                 >
@@ -326,23 +329,24 @@ export default function GameRoomPage() {
 
        {/* Modals and Overlays */}
         <AnimatePresence>
-            {isHost && !gameStarted && (
+            {!gameStarted && isHost && (
                  <motion.div
-                    className="absolute inset-0 bg-black/50 flex items-center justify-center"
+                    className="absolute inset-0 bg-black/60 flex items-center justify-center"
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
                 >
                     <motion.div
-                        className="bg-[#1f1f1f] p-8 rounded-2xl text-center"
+                        className="bg-[#1f1f1f] p-8 rounded-2xl text-center border border-[#3e3e3e]"
                         initial={{ scale: 0.7 }}
                         animate={{ scale: 1 }}
                     >
-                        <h2 className="text-2xl font-bold mb-4">Ready to start?</h2>
+                        <h2 className="text-3xl font-bold mb-4" style={{ fontFamily: "Kalam, cursive" }}>Ready to Play?</h2>
+                        <p className="text-[#ffedd2]/70 mb-6">Waiting for players to join...</p>
                         <motion.button
                           onClick={handleStartGame}
                           disabled={players.length < 2}
-                          className="mt-4 bg-gradient-to-r from-[#ffedd2] to-[#f4d03f] text-[#0d0d0d] font-bold py-3 px-8 rounded-full hover:shadow-lg hover:shadow-[#ffedd2]/20 transition disabled:opacity-50"
+                          className="mt-4 bg-gradient-to-r from-[#ffedd2] to-[#f4d03f] text-[#0d0d0d] font-bold py-3 px-8 rounded-full hover:shadow-lg hover:shadow-[#ffedd2]/20 transition disabled:opacity-50 disabled:cursor-not-allowed"
                            whileHover={{ scale: 1.1 }}
                            whileTap={{ scale: 0.9 }}
                         >
@@ -354,13 +358,14 @@ export default function GameRoomPage() {
             )}
             {roundCountdown !== null && (
                 <motion.div
-                    className="absolute inset-0 bg-black/50 flex items-center justify-center"
+                    className="absolute inset-0 bg-black/60 flex items-center justify-center"
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
                 >
-                    <div className="text-4xl font-bold text-orange-500 text-center">
-                        Next round starts in {roundCountdown}...
+                    <div className="text-4xl font-bold text-orange-500 text-center p-8 bg-[#1f1f1f] rounded-2xl border border-[#3e3e3e]">
+                       Next round starts in {roundCountdown}...
+                       <p className='text-xl mt-4 text-[#ffedd2]'>Get Ready!</p>
                     </div>
                  </motion.div>
             )}
