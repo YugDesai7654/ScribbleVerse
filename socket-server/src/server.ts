@@ -3,30 +3,52 @@ import http from 'http';
 import cors from 'cors';
 import { Server, Socket } from 'socket.io';
 import dotenv from 'dotenv';
-dotenv.config();
 import { connectDB } from './dbConnect/dbconnect';
 import { createRoom, joinRoom } from './api/room';
 
+// --- Environment and DB Setup ---
+dotenv.config();
+// console.log(process.env.MONGO_URI);
+
 connectDB();
 
+// --- Server and CORS Setup ---
 const app = express();
-const corsOrigin = process.env.CORS_ORIGIN ;
-// console.log(`CORS_ORIGIN: ${corsOrigin}`);
-app.use(cors({ origin: corsOrigin }));
+
+const allowedOrigins = [
+  process.env.CORS_ORIGIN || "http://localhost:5173",
+];
+
+const corsOptions: cors.CorsOptions = {
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl requests) or from whitelisted domains
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
+  credentials: true,
+};
+
+app.use(cors(corsOptions));
 
 const server = http.createServer(app);
+
+// --- Socket.IO Setup with CORS ---
 const io = new Server(server, {
-  cors: { origin: corsOrigin }
+  cors: corsOptions
 });
 
+// ====================================================================
+// --- YOUR ORIGINAL GAME LOGIC ---
+// ====================================================================
 type Player = { id: string; name: string };
 type Rooms = { [roomId: string]: Player[] };
 const rooms: Rooms = {};
 
-// Add chat storage per room
 const chatHistory: { [roomId: string]: { user: string; text: string; timestamp: number }[] } = {};
 
-// Add game state per room
 const gameState: {
   [roomId: string]: {
     rounds: number;
@@ -39,10 +61,7 @@ const gameState: {
   }
 } = {};
 
-// Add player points per room
 const playerPoints: { [roomId: string]: { [playerName: string]: number } } = {};
-
-// Track correct guessers per round
 const correctGuessers: { [roomId: string]: Set<string> } = {};
 
 const WORD_LIST = [
@@ -68,7 +87,6 @@ function getRandomWords(): string[] {
 function getPlaceholder(word: string) {
   return word.split('').map(c => (c === ' ' ? ' ' : '_')).join(' ');
 }
-
 
 io.on('connection', (socket: Socket) => {
   let currentRoom: string | null = null;
@@ -129,7 +147,7 @@ io.on('connection', (socket: Socket) => {
     if (!roomId || !user || !text) return;
     
     const state = gameState[roomId];
-    if (state) {
+    if (state && state.gameStarted) {
       const hostId = state.drawingOrder[0];
       if (socket.id === hostId) {
         socket.emit('chatError', { message: 'Drawer cannot send chat messages.' });
@@ -147,7 +165,7 @@ io.on('connection', (socket: Socket) => {
 
       const elapsed = state.roundStartTime ? Math.floor((Date.now() - state.roundStartTime) / 1000) : 0;
       const timeRemaining = Math.max(0, state.timePerRound - elapsed);
-      const points = 50 + (timeRemaining * 5); // Base points + time bonus
+      const points = 50 + (timeRemaining * 5);
 
       if (!playerPoints[roomId][user]) playerPoints[roomId][user] = 0;
       playerPoints[roomId][user] += points;
@@ -179,9 +197,7 @@ io.on('connection', (socket: Socket) => {
     socket.to(roomId).emit('drawing', line);
   });
 
-  // NEW: Handler for clearing the canvas
   socket.on('clearCanvas', ({ roomId }) => {
-    // Check to ensure only the current drawer can clear the canvas
     const state = gameState[roomId];
     if (state && state.gameStarted && socket.id === state.drawingOrder[0]) {
         io.to(roomId).emit('canvasCleared');
@@ -367,7 +383,17 @@ io.on('connection', (socket: Socket) => {
   });
 });
 
-const PORT = process.env.PORT;
+// ====================================================================
+// --- END OF YOUR LOGIC ---
+// ====================================================================
+
+
+// --- Health Check & Server Start ---
+app.get("/health", (req, res) => {
+  res.status(200).send("Server is up and running!");
+});
+
+const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`Socket.io server running on http://localhost:${PORT}`);
+  console.log(`🚀 Socket.io server running on port ${PORT}`);
 });
