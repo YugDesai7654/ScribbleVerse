@@ -1,111 +1,111 @@
 "use client"
 
 import { motion, useScroll, useTransform } from "framer-motion"
-import { useState, useEffect, useRef } from "react"
+// import { useState, useEffect, useRef } from "react"
 import { Palette, Users, Crown, Trophy, MessageCircle, Play, ArrowRight, Sparkles, Zap, Target } from "lucide-react"
 import SplashCursor from "./SplashCursor"
 
-// Cursor Trail Component
-function CursorTrail() {
-  const [trail, setTrail] = useState<Array<{ x: number; y: number; id: number; timestamp: number }>>([])
-  const trailRef = useRef<Array<{ x: number; y: number; id: number; timestamp: number }>>([])
-  const idCounter = useRef(0)
+// // Cursor Trail Component
+// function CursorTrail() {
+//   const [trail, setTrail] = useState<Array<{ x: number; y: number; id: number; timestamp: number }>>([])
+//   const trailRef = useRef<Array<{ x: number; y: number; id: number; timestamp: number }>>([])
+//   const idCounter = useRef(0)
 
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      const newPoint = {
-        x: e.clientX,
-        y: e.clientY,
-        id: idCounter.current++,
-        timestamp: Date.now(),
-      }
+//   useEffect(() => {
+//     const handleMouseMove = (e: MouseEvent) => {
+//       const newPoint = {
+//         x: e.clientX,
+//         y: e.clientY,
+//         id: idCounter.current++,
+//         timestamp: Date.now(),
+//       }
 
-      trailRef.current = [...trailRef.current, newPoint].slice(-50) // Keep last 50 points
-      setTrail([...trailRef.current])
-    }
+//       trailRef.current = [...trailRef.current, newPoint].slice(-50) // Keep last 50 points
+//       setTrail([...trailRef.current])
+//     }
 
-    // Clean up old points
-    const cleanupInterval = setInterval(() => {
-      const now = Date.now()
-      trailRef.current = trailRef.current.filter((point) => now - point.timestamp < 2000) // Keep points for 2 seconds
-      setTrail([...trailRef.current])
-    }, 100)
+//     // Clean up old points
+//     const cleanupInterval = setInterval(() => {
+//       const now = Date.now()
+//       trailRef.current = trailRef.current.filter((point) => now - point.timestamp < 2000) // Keep points for 2 seconds
+//       setTrail([...trailRef.current])
+//     }, 100)
 
-    document.addEventListener("mousemove", handleMouseMove)
+//     document.addEventListener("mousemove", handleMouseMove)
 
-    return () => {
-      document.removeEventListener("mousemove", handleMouseMove)
-      clearInterval(cleanupInterval)
-    }
-  }, [])
+//     return () => {
+//       document.removeEventListener("mousemove", handleMouseMove)
+//       clearInterval(cleanupInterval)
+//     }
+//   }, [])
 
-  if (trail.length < 2) return null
+//   if (trail.length < 2) return null
 
-  // Create SVG path from trail points
-  const pathData = trail.reduce((path, point, index) => {
-    if (index === 0) {
-      return `M ${point.x} ${point.y}`
-    }
-    return `${path} L ${point.x} ${point.y}`
-  }, "")
+//   // Create SVG path from trail points
+//   const pathData = trail.reduce((path, point, index) => {
+//     if (index === 0) {
+//       return `M ${point.x} ${point.y}`
+//     }
+//     return `${path} L ${point.x} ${point.y}`
+//   }, "")
 
-  return (
-    <div className="fixed inset-0 pointer-events-none z-50">
-      <svg className="w-full h-full">
-        <defs>
-          <linearGradient id="trailGradient" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%" stopColor="#ffedd2" stopOpacity="0" />
-            <stop offset="50%" stopColor="#ffedd2" stopOpacity="0.6" />
-            <stop offset="100%" stopColor="#ffedd2" stopOpacity="0.9" />
-          </linearGradient>
-          <filter id="glow">
-            <feGaussianBlur stdDeviation="3" result="coloredBlur" />
-            <feMerge>
-              <feMergeNode in="coloredBlur" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-        </defs>
-        {trail.length > 1 && (
-          <motion.path
-            d={pathData}
-            stroke="url(#trailGradient)"
-            strokeWidth="3"
-            fill="none"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            filter="url(#glow)"
-            initial={{ pathLength: 0, opacity: 0 }}
-            animate={{ pathLength: 1, opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.3, ease: "easeOut" }}
-          />
-        )}
+//   return (
+//     <div className="fixed inset-0 pointer-events-none z-50">
+//       <svg className="w-full h-full">
+//         <defs>
+//           <linearGradient id="trailGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+//             <stop offset="0%" stopColor="#ffedd2" stopOpacity="0" />
+//             <stop offset="50%" stopColor="#ffedd2" stopOpacity="0.6" />
+//             <stop offset="100%" stopColor="#ffedd2" stopOpacity="0.9" />
+//           </linearGradient>
+//           <filter id="glow">
+//             <feGaussianBlur stdDeviation="3" result="coloredBlur" />
+//             <feMerge>
+//               <feMergeNode in="coloredBlur" />
+//               <feMergeNode in="SourceGraphic" />
+//             </feMerge>
+//           </filter>
+//         </defs>
+//         {trail.length > 1 && (
+//           <motion.path
+//             d={pathData}
+//             stroke="url(#trailGradient)"
+//             strokeWidth="3"
+//             fill="none"
+//             strokeLinecap="round"
+//             strokeLinejoin="round"
+//             filter="url(#glow)"
+//             initial={{ pathLength: 0, opacity: 0 }}
+//             animate={{ pathLength: 1, opacity: 1 }}
+//             exit={{ opacity: 0 }}
+//             transition={{ duration: 0.3, ease: "easeOut" }}
+//           />
+//         )}
 
-        {/* Add sparkle effects along the trail */}
-        {trail.slice(-10).map((point, index) => {
-          const age = Date.now() - point.timestamp
-          const opacity = Math.max(0, 1 - age / 2000)
+//         {/* Add sparkle effects along the trail */}
+//         {trail.slice(-10).map((point, index) => {
+//           const age = Date.now() - point.timestamp
+//           const opacity = Math.max(0, 1 - age / 2000)
 
-          return (
-            <motion.circle
-              key={point.id}
-              cx={point.x}
-              cy={point.y}
-              r="2"
-              fill="#ffedd2"
-              opacity={opacity * 0.7}
-              initial={{ scale: 0 }}
-              animate={{ scale: 1 }}
-              exit={{ scale: 0, opacity: 0 }}
-              transition={{ duration: 0.2 }}
-            />
-          )
-        })}
-      </svg>
-    </div>
-  )
-}
+//           return (
+//             <motion.circle
+//               key={point.id}
+//               cx={point.x}
+//               cy={point.y}
+//               r="2"
+//               fill="#ffedd2"
+//               opacity={opacity * 0.7}
+//               initial={{ scale: 0 }}
+//               animate={{ scale: 1 }}
+//               exit={{ scale: 0, opacity: 0 }}
+//               transition={{ duration: 0.2 }}
+//             />
+//           )
+//         })}
+//       </svg>
+//     </div>
+//   )
+// }
 
 // Floating particles background
 function FloatingParticles() {

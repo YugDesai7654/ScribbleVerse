@@ -176,14 +176,18 @@ export default function GameRoomPage() {
       setDrawLines([]);
     });
 
-    socket.on('wordOptions', ({ options, round }) => {
+    socket.on('wordOptions', ({ options }) => {
+    // socket.on('wordOptions', ({ options, round }) => {
+
+
       setWordOptions(options);
       setShowWordOptions(true);
       setSelectedWord(null);
       setDisplayWord('');
     });
     
-    socket.on('roundStart', ({ word, isDrawer, round }) => {
+    socket.on('roundStart', ({ word  }) => {
+    // socket.on('roundStart', ({ word, isDrawer, round }) => {
       setShowWordOptions(false);
       setWordOptions(null);
       setSelectedWord(null);
