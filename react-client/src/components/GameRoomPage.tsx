@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import socket from '../socket';
 import DrawingCanvas, { type DrawLine } from './DrawingCanvas';
 import { motion, AnimatePresence } from 'framer-motion';
-import { LogOut, Send, Users, Clock, Edit, Trophy } from 'lucide-react';
+import { LogOut, Send, Users, Clock, Edit, Trophy, Eraser } from 'lucide-react'; // Import Eraser icon
 
 type Score = { name: string; score: number };
 
@@ -38,21 +38,18 @@ export default function GameRoomPage() {
   const timePerRoundRef = useRef(timePerRound);
   timePerRoundRef.current = timePerRound;
 
-  // Effect for socket connection and all event listeners
   useEffect(() => {
     if (!roomId || !name) {
       navigate('/room');
       return;
     }
 
-    // --- Connection ---
     socket.connect();
     socket.on('connect', () => {
       setSocketId(socket.id || '');
       socket.emit('joinRoom', { roomId, name });
     });
 
-    // --- Event Listeners ---
     socket.on('joinRoomSuccess', () => {
       setJoined(true);
       localStorage.setItem('roomId', roomId || '');
@@ -71,7 +68,7 @@ export default function GameRoomPage() {
 
     socket.on('gameStarted', (data) => {
       setGameStarted(true);
-      setGameOverInfo(null); // Clear previous game over screen
+      setGameOverInfo(null);
       setTotalRounds(data.rounds);
       setTimePerRound(data.timePerRound); 
       setCurrentRound(1);
@@ -88,7 +85,7 @@ export default function GameRoomPage() {
       setCurrentRound(round);
       setTimer(timePerRoundRef.current); 
       setRoundCountdown(null);
-      setDrawLines([]); 
+      setDrawLines([]); // Automatically clears canvas for the new turn
       
       if (timerRef.current) clearInterval(timerRef.current);
       timerRef.current = setInterval(() => {
@@ -110,7 +107,7 @@ export default function GameRoomPage() {
       setDrawerId(null);
       if (timerRef.current) clearInterval(timerRef.current);
       setTimer(0);
-      setGameOverInfo(data); // Store final scores to show modal
+      setGameOverInfo(data);
     });
 
     socket.on('chatHistory', (history) => setChatMessages(history));
@@ -120,6 +117,11 @@ export default function GameRoomPage() {
       setDrawLines(prev => [...prev, line]);
     };
     socket.on('drawing', handleDrawing);
+
+    // Listener for the new clear canvas event
+    socket.on('canvasCleared', () => {
+      setDrawLines([]);
+    });
 
     socket.on('wordOptions', ({ options, round }) => {
       setWordOptions(options);
@@ -137,7 +139,6 @@ export default function GameRoomPage() {
 
     socket.on('pointsUpdate', (pts) => setPoints(pts));
 
-    // --- Cleanup on component unmount ---
     return () => {
       socket.off('connect');
       socket.off('joinRoomSuccess');
@@ -149,6 +150,7 @@ export default function GameRoomPage() {
       socket.off('chatHistory');
       socket.off('chatMessage');
       socket.off('drawing', handleDrawing);
+      socket.off('canvasCleared'); // Cleanup the new listener
       socket.off('wordOptions');
       socket.off('roundStart');
       socket.off('roundStartingSoon');
@@ -196,6 +198,13 @@ export default function GameRoomPage() {
     setSelectedWord(word);
     socket.emit('chooseWord', { roomId, word, round: currentRound });
   };
+  
+  // Handler for the new clear canvas button
+  const handleClearCanvas = () => {
+    if (isDrawer) {
+      socket.emit('clearCanvas', { roomId });
+    }
+  };
 
   const isHost = hostName === name;
   const isDrawer = drawerId === socket.id;
@@ -204,7 +213,6 @@ export default function GameRoomPage() {
   return (
     <div className="flex flex-col min-h-screen bg-[#0d0d0d] text-[#ffedd2]">
       <link href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap" rel="stylesheet" />
-      {/* Header */}
       <header className="flex items-center justify-between px-8 py-4 bg-[#1f1f1f] border-b border-[#3e3e3e]">
         <h1 className="text-2xl font-bold" style={{ fontFamily: "Kalam, cursive" }}>Room: {roomId}</h1>
         <motion.button
@@ -218,7 +226,6 @@ export default function GameRoomPage() {
         </motion.button>
       </header>
       <div className="flex flex-1 p-8 gap-8">
-        {/* Sidebar */}
         <aside className="w-72 bg-[#1f1f1f] border border-[#3e3e3e] rounded-2xl p-4 flex flex-col">
           <h3 className="text-xl font-bold mb-4 flex items-center gap-2" style={{ fontFamily: "Kalam, cursive" }}><Users className="w-6 h-6"/> Players</h3>
           <ul className="flex-1 overflow-y-auto space-y-2">
@@ -242,8 +249,7 @@ export default function GameRoomPage() {
             </AnimatePresence>
           </ul>
         </aside>
-        {/* Main Area */}
-        <main className="flex-1 flex flex-col gap-6">
+        <main className="flex-1 flex flex-col gap-4"> {/* Reduced gap */}
           <div className="flex-[2] h-[32rem] bg-[#0d0d0d] rounded-2xl border border-[#3e3e3e] flex flex-col items-center justify-center p-4">
               <div className="w-full flex justify-between items-center mb-2 px-2 text-[#ffedd2]/80">
                   <div className="text-md font-semibold">Round: {currentRound} / {totalRounds}</div>
@@ -258,7 +264,20 @@ export default function GameRoomPage() {
                 canDraw={isDrawer && gameStarted && !showWordOptions}
               />
           </div>
-           {/* Guess Word / Word to Draw */}
+          {/* Controls for Drawer */}
+          <div className="w-full h-12 flex justify-center items-center">
+            {isDrawer && gameStarted && (
+              <motion.button
+                onClick={handleClearCanvas}
+                className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg flex items-center gap-2 transition-colors"
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+              >
+                  <Eraser className="w-5 h-5" />
+                  Clear Canvas
+              </motion.button>
+            )}
+          </div>
           <div className="w-full h-24 flex flex-col items-center justify-center bg-[#1f1f1f] border border-[#3e3e3e] rounded-2xl">
             {isDrawer && showWordOptions && wordOptions && (
               <motion.div initial={{opacity: 0}} animate={{opacity: 1}} className="text-center">
@@ -288,7 +307,6 @@ export default function GameRoomPage() {
              )}
           </div>
         </main>
-        {/* Chat Area */}
         <aside className="w-80 bg-[#1f1f1f] border border-[#3e3e3e] rounded-2xl p-4 flex flex-col h-full">
             <h3 className="text-xl font-bold mb-4" style={{ fontFamily: "Kalam, cursive" }}>Chat</h3>
             <div className="flex-1 overflow-y-auto mb-2 pr-2 space-y-2">
@@ -328,103 +346,101 @@ export default function GameRoomPage() {
         </aside>
       </div>
 
-       {/* Modals and Overlays */}
-        <AnimatePresence>
-            {!gameStarted && isHost && !gameOverInfo &&(
-                 <motion.div
-                    className="absolute inset-0 bg-black/60 flex items-center justify-center"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                >
-                    <motion.div
-                        className="bg-[#1f1f1f] p-8 rounded-2xl text-center border border-[#3e3e3e]"
-                        initial={{ scale: 0.7 }}
-                        animate={{ scale: 1 }}
-                    >
-                        <h2 className="text-3xl font-bold mb-4" style={{ fontFamily: "Kalam, cursive" }}>Ready to Play?</h2>
-                        <p className="text-[#ffedd2]/70 mb-6">Waiting for players to join...</p>
-                        <motion.button
-                          onClick={handleStartGame}
-                          disabled={players.length < 2}
-                          className="mt-4 bg-gradient-to-r from-[#ffedd2] to-[#f4d03f] text-[#0d0d0d] font-bold py-3 px-8 rounded-full hover:shadow-lg hover:shadow-[#ffedd2]/20 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                           whileHover={{ scale: 1.1 }}
-                           whileTap={{ scale: 0.9 }}
-                        >
-                          Start Game
-                        </motion.button>
-                         {players.length < 2 && <p className="text-sm text-red-400 mt-2">Need at least 2 players to start.</p>}
-                    </motion.div>
-                 </motion.div>
-            )}
-            {roundCountdown !== null && (
-                <motion.div
-                    className="absolute inset-0 bg-black/60 flex items-center justify-center"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                >
-                    <div className="text-4xl font-bold text-orange-500 text-center p-8 bg-[#1f1f1f] rounded-2xl border border-[#3e3e3e]">
-                       Next round starts in {roundCountdown}...
-                       <p className='text-xl mt-4 text-[#ffedd2]'>Get Ready!</p>
-                    </div>
-                 </motion.div>
-            )}
-            {/* NEW: Game Over Modal */}
-            {gameOverInfo && (
-                <motion.div 
-                    className="absolute inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                >
-                    <motion.div 
-                        className="bg-[#1f1f1f] p-8 rounded-2xl text-center border border-[#3e3e3e] w-full max-w-md"
-                        initial={{ scale: 0.7, opacity: 0 }}
-                        animate={{ scale: 1, opacity: 1 }}
-                        transition={{ delay: 0.2, duration: 0.4 }}
-                    >
-                        <h2 className="text-5xl font-bold mb-4 text-[#f4d03f]" style={{ fontFamily: "Kalam, cursive" }}>Game Over!</h2>
-                        
-                        {gameOverInfo.reason ? (
-                            <p className="text-xl text-red-400 mt-6">{gameOverInfo.reason}</p>
-                        ) : (
-                            <>
-                                <div className="mb-6 mt-4">
-                                    <Trophy className="w-24 h-24 text-yellow-400 mx-auto" />
-                                    <p className="text-xl mt-2">Winner</p>
-                                    <p className="text-3xl font-bold text-white">{gameOverInfo.scores[0]?.name || 'No one'}</p>
-                                    <p className="text-lg text-yellow-400">{gameOverInfo.scores[0]?.score || 0} points</p>
-                                </div>
-                                <h3 className="text-2xl font-bold mb-4" style={{ fontFamily: "Kalam, cursive" }}>Final Scores</h3>
-                                <ul className="space-y-2 text-left max-h-48 overflow-y-auto pr-2">
-                                    {gameOverInfo.scores.map((player, index) => (
-                                        <li key={player.name} className={`flex justify-between items-center p-3 rounded-lg ${index === 0 ? 'bg-yellow-400/20 border border-yellow-400' : 'bg-[#282828]'}`}>
-                                            <span className="font-semibold text-lg flex items-center gap-2">
-                                                {index === 0 && <Trophy className="w-5 h-5 text-yellow-400"/>}
-                                                {index === 1 && <Trophy className="w-5 h-5 text-gray-400"/>}
-                                                {index === 2 && <Trophy className="w-5 h-5 text-orange-400"/>}
-                                                {index > 2 && <span className="w-5 text-center">{index + 1}</span>}
-                                                {player.name}
-                                            </span>
-                                            <span className="font-bold text-purple-400">{player.score} points</span>
-                                        </li>
-                                    ))}
-                                </ul>
-                            </>
-                        )}
-                        <motion.button 
-                            onClick={handleLeaveRoom} 
-                            className="mt-8 bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-8 rounded-full transition-colors"
-                            whileHover={{ scale: 1.05 }}
-                            whileTap={{ scale: 0.95 }}
-                        >
-                            Leave Room
-                        </motion.button>
-                    </motion.div>
-                </motion.div>
-            )}
-        </AnimatePresence>
+      <AnimatePresence>
+          {!gameStarted && isHost && !gameOverInfo &&(
+               <motion.div
+                  className="absolute inset-0 bg-black/60 flex items-center justify-center"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+              >
+                  <motion.div
+                      className="bg-[#1f1f1f] p-8 rounded-2xl text-center border border-[#3e3e3e]"
+                      initial={{ scale: 0.7 }}
+                      animate={{ scale: 1 }}
+                  >
+                      <h2 className="text-3xl font-bold mb-4" style={{ fontFamily: "Kalam, cursive" }}>Ready to Play?</h2>
+                      <p className="text-[#ffedd2]/70 mb-6">Waiting for players to join...</p>
+                      <motion.button
+                        onClick={handleStartGame}
+                        disabled={players.length < 2}
+                        className="mt-4 bg-gradient-to-r from-[#ffedd2] to-[#f4d03f] text-[#0d0d0d] font-bold py-3 px-8 rounded-full hover:shadow-lg hover:shadow-[#ffedd2]/20 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                         whileHover={{ scale: 1.1 }}
+                         whileTap={{ scale: 0.9 }}
+                      >
+                        Start Game
+                      </motion.button>
+                       {players.length < 2 && <p className="text-sm text-red-400 mt-2">Need at least 2 players to start.</p>}
+                  </motion.div>
+               </motion.div>
+          )}
+          {roundCountdown !== null && (
+              <motion.div
+                  className="absolute inset-0 bg-black/60 flex items-center justify-center"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+              >
+                  <div className="text-4xl font-bold text-orange-500 text-center p-8 bg-[#1f1f1f] rounded-2xl border border-[#3e3e3e]">
+                     Next round starts in {roundCountdown}...
+                     <p className='text-xl mt-4 text-[#ffedd2]'>Get Ready!</p>
+                  </div>
+               </motion.div>
+          )}
+          {gameOverInfo && (
+              <motion.div 
+                  className="absolute inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+              >
+                  <motion.div 
+                      className="bg-[#1f1f1f] p-8 rounded-2xl text-center border border-[#3e3e3e] w-full max-w-md"
+                      initial={{ scale: 0.7, opacity: 0 }}
+                      animate={{ scale: 1, opacity: 1 }}
+                      transition={{ delay: 0.2, duration: 0.4 }}
+                  >
+                      <h2 className="text-5xl font-bold mb-4 text-[#f4d03f]" style={{ fontFamily: "Kalam, cursive" }}>Game Over!</h2>
+                      
+                      {gameOverInfo.reason ? (
+                          <p className="text-xl text-red-400 mt-6">{gameOverInfo.reason}</p>
+                      ) : (
+                          <>
+                              <div className="mb-6 mt-4">
+                                  <Trophy className="w-24 h-24 text-yellow-400 mx-auto" />
+                                  <p className="text-xl mt-2">Winner</p>
+                                  <p className="text-3xl font-bold text-white">{gameOverInfo.scores[0]?.name || 'No one'}</p>
+                                  <p className="text-lg text-yellow-400">{gameOverInfo.scores[0]?.score || 0} points</p>
+                              </div>
+                              <h3 className="text-2xl font-bold mb-4" style={{ fontFamily: "Kalam, cursive" }}>Final Scores</h3>
+                              <ul className="space-y-2 text-left max-h-48 overflow-y-auto pr-2">
+                                  {gameOverInfo.scores.map((player, index) => (
+                                      <li key={player.name} className={`flex justify-between items-center p-3 rounded-lg ${index === 0 ? 'bg-yellow-400/20 border border-yellow-400' : 'bg-[#282828]'}`}>
+                                          <span className="font-semibold text-lg flex items-center gap-2">
+                                              {index === 0 && <Trophy className="w-5 h-5 text-yellow-400"/>}
+                                              {index === 1 && <Trophy className="w-5 h-5 text-gray-400"/>}
+                                              {index === 2 && <Trophy className="w-5 h-5 text-orange-400"/>}
+                                              {index > 2 && <span className="w-5 text-center">{index + 1}</span>}
+                                              {player.name}
+                                          </span>
+                                          <span className="font-bold text-purple-400">{player.score} points</span>
+                                      </li>
+                                  ))}
+                              </ul>
+                          </>
+                      )}
+                      <motion.button 
+                          onClick={handleLeaveRoom} 
+                          className="mt-8 bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-8 rounded-full transition-colors"
+                          whileHover={{ scale: 1.05 }}
+                          whileTap={{ scale: 0.95 }}
+                      >
+                          Leave Room
+                      </motion.button>
+                  </motion.div>
+              </motion.div>
+          )}
+      </AnimatePresence>
     </div>
   );
 }

@@ -1,109 +1,104 @@
-import React, { useRef, useEffect } from 'react';
+'use client'
+import { useEffect, useRef, useState } from 'react';
 
 export type DrawLine = {
-  from: { x: number; y: number };
-  to: { x: number; y: number };
-  color?: string;
-  thickness?: number;
+  prevPoint: Point | null;
+  currentPoint: Point;
+  color: string;
 };
 
+export type Point = { x: number; y: number };
+
 interface DrawingCanvasProps {
-  width?: number;
-  height?: number;
-  onDrawLine?: (line: DrawLine) => void;
-  remoteLines?: DrawLine[];
-  canDraw?: boolean;
+  width: number;
+  height: number;
+  onDrawLine: (line: DrawLine) => void;
+  remoteLines: DrawLine[];
+  canDraw: boolean;
 }
 
-const DEFAULT_COLOR = '#222';
-const DEFAULT_THICKNESS = 3;
-
-const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
-  width = 800,
-  height = 500,
-  onDrawLine,
-  remoteLines = [],
-  canDraw = true,
-}) => {
+export default function DrawingCanvas({ width, height, onDrawLine, remoteLines, canDraw }: DrawingCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const drawing = useRef(false);
-  const lastPoint = useRef<{ x: number; y: number } | null>(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const prevPointRef = useRef<Point | null>(null);
+  const [color] = useState('#000000'); // Using black for drawing
 
-  // Draw a line on the canvas
-  const drawLine = (ctx: CanvasRenderingContext2D, line: DrawLine) => {
-    ctx.strokeStyle = line.color || DEFAULT_COLOR;
-    ctx.lineWidth = line.thickness || DEFAULT_THICKNESS;
-    ctx.lineCap = 'round';
+  // Effect to handle drawing remote lines and clearing the canvas
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // **THIS IS THE FIX**: Clear the canvas completely before redrawing
+    ctx.clearRect(0, 0, width, height);
+
+    // Redraw all lines (local and remote) from the state
+    const allLines = [...remoteLines]; // In this setup, remoteLines is the single source of truth
+    allLines.forEach(line => drawLineOnCanvas(line, ctx));
+
+  }, [remoteLines, width, height]); // Rerun when lines or dimensions change
+
+  const getPointInCanvas = (e: React.MouseEvent): Point => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    return { x, y };
+  };
+
+  const drawLineOnCanvas = (line: DrawLine, ctx: CanvasRenderingContext2D) => {
+    const { prevPoint, currentPoint, color: line_color } = line;
+    const startPoint = prevPoint ?? currentPoint;
     ctx.beginPath();
-    ctx.moveTo(line.from.x, line.from.y);
-    ctx.lineTo(line.to.x, line.to.y);
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = line_color;
+    ctx.lineCap = 'round';
+    ctx.moveTo(startPoint.x, startPoint.y);
+    ctx.lineTo(currentPoint.x, currentPoint.y);
     ctx.stroke();
   };
 
-  // Handle mouse events
   const handleMouseDown = (e: React.MouseEvent) => {
     if (!canDraw) return;
-    drawing.current = true;
-    const rect = canvasRef.current!.getBoundingClientRect();
-    lastPoint.current = {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
-    };
+    setIsDrawing(true);
+    const currentPoint = getPointInCanvas(e);
+    prevPointRef.current = currentPoint;
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (!drawing.current || !canDraw) return;
-    const rect = canvasRef.current!.getBoundingClientRect();
-    const newPoint = {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
+    if (!isDrawing || !canDraw) return;
+
+    const currentPoint = getPointInCanvas(e);
+    const line: DrawLine = {
+      prevPoint: prevPointRef.current,
+      currentPoint,
+      color,
     };
-    if (lastPoint.current) {
-      const line: DrawLine = {
-        from: lastPoint.current,
-        to: newPoint,
-        color: DEFAULT_COLOR,
-        thickness: DEFAULT_THICKNESS,
-      };
-      const ctx = canvasRef.current!.getContext('2d');
-      if (ctx) drawLine(ctx, line);
-      if (onDrawLine) onDrawLine(line);
-      lastPoint.current = newPoint;
-    }
+    
+    // Immediately emit the line to be drawn on other clients
+    onDrawLine(line);
+    
+    prevPointRef.current = currentPoint;
   };
 
   const handleMouseUp = () => {
-    drawing.current = false;
-    lastPoint.current = null;
+    setIsDrawing(false);
+    prevPointRef.current = null;
   };
-
-  // Render remote lines
-  useEffect(() => {
-    const ctx = canvasRef.current?.getContext('2d');
-    if (ctx && remoteLines.length > 0) {
-      remoteLines.forEach(line => drawLine(ctx, line));
-    }
-    // eslint-disable-next-line
-  }, [remoteLines]);
-
-  // Clear canvas on mount
-  useEffect(() => {
-    const ctx = canvasRef.current?.getContext('2d');
-    if (ctx) ctx.clearRect(0, 0, width, height);
-  }, [width, height]);
 
   return (
     <canvas
       ref={canvasRef}
       width={width}
       height={height}
-      style={{ background: '#fff', borderRadius: 8, boxShadow: '0 1px 4px #0001', cursor: canDraw ? 'crosshair' : 'not-allowed' }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
+      onMouseLeave={handleMouseUp} // End drawing if mouse leaves canvas
+      className={`bg-white rounded-lg ${canDraw ? 'cursor-crosshair' : 'cursor-not-allowed'}`}
+      style={{ touchAction: 'none' }}
     />
   );
-};
-
-export default DrawingCanvas; 
+}

@@ -177,6 +177,15 @@ io.on('connection', (socket: Socket) => {
     socket.to(roomId).emit('drawing', line);
   });
 
+  // NEW: Handler for clearing the canvas
+  socket.on('clearCanvas', ({ roomId }) => {
+    // Check to ensure only the current drawer can clear the canvas
+    const state = gameState[roomId];
+    if (state && state.gameStarted && socket.id === state.drawingOrder[0]) {
+        io.to(roomId).emit('canvasCleared');
+    }
+  });
+
   function startDrawingTurn(roomId: string, drawerId: string, round: number) {
     const options = getRandomWords();
     wordState[roomId] = {
@@ -202,30 +211,26 @@ io.on('connection', (socket: Socket) => {
   }
 
   function endRoundWithDelay(roomId: string, state: typeof gameState[string], drawerName: string) {
-    // Award points to the drawer based on how many people guessed correctly
     const guesserCount = correctGuessers[roomId]?.size || 0;
-    const drawerPoints = guesserCount * 50; // 50 points per correct guess
+    const drawerPoints = guesserCount * 50;
     if (drawerName && drawerPoints > 0) {
         if (!playerPoints[roomId][drawerName]) playerPoints[roomId][drawerName] = 0;
         playerPoints[roomId][drawerName] += drawerPoints;
         io.to(roomId).emit('pointsUpdate', playerPoints[roomId]);
     }
 
-    // Reveal the word to everyone
     const word = wordState[roomId]?.currentWord;
     if (word) {
         io.to(roomId).emit('chatMessage', { user: 'System', text: `The word was: ${word}`, timestamp: Date.now() });
     }
 
-    // Check for game over BEFORE starting the next round countdown
     if (state.currentRound >= state.rounds) {
         state.gameStarted = false;
-        // Calculate final scores and emit 'gameOver'
         const finalScores = Object.entries(playerPoints[roomId])
             .map(([name, score]) => ({ name, score }))
-            .sort((a, b) => b.score - a.score); // Sort from highest to lowest
+            .sort((a, b) => b.score - a.score);
         io.to(roomId).emit('gameOver', { scores: finalScores });
-        return; // Stop the function here
+        return;
     }
 
     let countdown = 5;
@@ -234,7 +239,6 @@ io.on('connection', (socket: Socket) => {
       countdown--;
       if (countdown < 0) {
         clearInterval(interval);
-        // Advance to next round
         state.currentRound += 1;
         state.drawnThisRound = [];
         const hostId = state.drawingOrder[0];
@@ -242,11 +246,10 @@ io.on('connection', (socket: Socket) => {
         startDrawingTurn(roomId, hostId, state.currentRound);
       }
     }, 1000);
-}
-
+  }
 
   function handleWordChosen(roomId: string, drawerId: string, word: string, round: number) {
-    if (wordState[roomId].currentWord) return; // Prevent choosing twice
+    if (wordState[roomId].currentWord) return;
     
     wordState[roomId].currentWord = word;
     if (wordState[roomId].wordSelectionTimeout) {
@@ -265,21 +268,20 @@ io.on('connection', (socket: Socket) => {
     });
   }
 
-  // CORRECTED: Single, correct 'chooseWord' handler
   socket.on('chooseWord', ({ roomId, word, round }) => {
-    if (!roomId || !word || !currentRoom) return;
+    const roomIdStr = currentRoom;
+    if (!roomIdStr || !word) return;
     
-    const state = gameState[currentRoom];
+    const state = gameState[roomIdStr];
     if (!state) return;
     
     const hostId = state.drawingOrder[0];
     if (socket.id !== hostId) return;
 
-    handleWordChosen(currentRoom, socket.id, word, round);
+    handleWordChosen(roomIdStr, socket.id, word, round);
   });
 
   socket.on('startGame', async () => {
-    // Assign currentRoom to a new const that TypeScript knows is not null
     const roomId = currentRoom;
     if (!roomId) return; 
     
@@ -303,7 +305,6 @@ io.on('connection', (socket: Socket) => {
       state.currentRound = 1;
       state.gameStarted = true;
       
-      // Reset points for everyone in the room
       playerPoints[roomId] = {};
       players.forEach(p => {
         playerPoints[roomId][p.name] = 0;
@@ -321,8 +322,8 @@ io.on('connection', (socket: Socket) => {
   });
 
   socket.on('endDrawingTurn', () => {
-    if (!currentRoom) return;
     const roomId = currentRoom;
+    if (!roomId) return;
     const state = gameState[roomId];
     if (!state || !state.gameStarted) return;
     
@@ -351,9 +352,7 @@ io.on('connection', (socket: Socket) => {
         delete chatHistory[currentRoom];
         delete playerPoints[currentRoom];
       } else {
-          // If the host disconnects, end the game for everyone
           if (disconnectedPlayer && gameState[currentRoom]?.gameStarted && disconnectedPlayer.id === gameState[currentRoom].drawingOrder[0]) {
-             // Let clients know the game ended because the host left
              io.to(currentRoom).emit('gameOver', { scores: [], reason: 'Host has disconnected. Game over.' });
              gameState[currentRoom].gameStarted = false;
           }
