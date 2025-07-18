@@ -1,19 +1,68 @@
 'use client'
 import { useNavigate, useParams, Navigate } from 'react-router-dom';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import socket from '../socket';
 import DrawingCanvas, { type DrawLine } from './DrawingCanvas';
 import { motion, AnimatePresence } from 'framer-motion';
-import { LogOut, Send, Users, Clock, Edit, Trophy, Eraser } from 'lucide-react'; // Import Eraser icon
+import { LogOut, Send, Users, Clock, Edit, Trophy, Eraser, Crown } from 'lucide-react';
 
 type Score = { name: string; score: number };
+type Player = { id: string; name: string };
+
+// Helper to generate a consistent color from a string (like a player's name)
+const stringToColor = (str: string) => {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  let color = '#';
+  for (let i = 0; i < 3; i++) {
+    const value = (hash >> (i * 8)) & 0xFF;
+    color += ('00' + value.toString(16)).substr(-2);
+  }
+  return color;
+};
+
+// New PlayerCard component for the sidebar
+const PlayerCard = ({ player, points, isHost, isYou, isDrawer }: { player: Player; points: number; isHost: boolean; isYou: boolean; isDrawer: boolean; }) => {
+    const avatarColor = useMemo(() => stringToColor(player.name), [player.name]);
+    const initial = player.name.charAt(0).toUpperCase();
+
+    return (
+        <motion.div
+            layout
+            initial={{ opacity: 0, y: 20, scale: 0.9 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, x: -20 }}
+            transition={{ duration: 0.3, ease: "easeOut" }}
+            className={`p-3 rounded-lg flex items-center gap-3 transition-all duration-300 border-2 ${isDrawer ? 'bg-orange-400/20 border-orange-400' : 'bg-[#282828] border-transparent'}`}
+        >
+            <div
+                className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-white text-xl"
+                style={{ backgroundColor: avatarColor }}
+            >
+                {initial}
+            </div>
+            <div className="flex-1">
+                <div className="flex items-center gap-2">
+                    <p className="font-bold text-white truncate">{player.name}</p>
+                    {isHost && <span title="Host"><Crown className="w-4 h-4 text-yellow-400" /></span>}
+                    {isDrawer && <span title="Drawing"><Edit className="w-4 h-4 text-orange-400" /></span>}
+                </div>
+                <p className="text-sm text-purple-400 font-semibold">{points} pts</p>
+            </div>
+            {isYou && <span className="text-xs font-bold text-green-400">YOU</span>}
+        </motion.div>
+    );
+};
+
 
 export default function GameRoomPage() {
   const { roomId } = useParams();
   const navigate = useNavigate();
   const [name] = useState(() => localStorage.getItem('name') || '');
   const [joined, setJoined] = useState(false);
-  const [players, setPlayers] = useState<{ id: string; name: string }[]>([]);
+  const [players, setPlayers] = useState<Player[]>([]);
   const [hostName, setHostName] = useState<string>('');
   const [gameStarted, setGameStarted] = useState(false);
   const [chatMessages, setChatMessages] = useState<{ user: string; text: string; timestamp: number; correct?: boolean }[]>([]);
@@ -37,6 +86,11 @@ export default function GameRoomPage() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timePerRoundRef = useRef(timePerRound);
   timePerRoundRef.current = timePerRound;
+
+  // Memoized sorted players list
+  const sortedPlayers = useMemo(() => {
+    return [...players].sort((a, b) => (points[b.name] || 0) - (points[a.name] || 0));
+  }, [players, points]);
 
   useEffect(() => {
     if (!roomId || !name) {
@@ -85,7 +139,7 @@ export default function GameRoomPage() {
       setCurrentRound(round);
       setTimer(timePerRoundRef.current); 
       setRoundCountdown(null);
-      setDrawLines([]); // Automatically clears canvas for the new turn
+      setDrawLines([]);
       
       if (timerRef.current) clearInterval(timerRef.current);
       timerRef.current = setInterval(() => {
@@ -118,7 +172,6 @@ export default function GameRoomPage() {
     };
     socket.on('drawing', handleDrawing);
 
-    // Listener for the new clear canvas event
     socket.on('canvasCleared', () => {
       setDrawLines([]);
     });
@@ -150,7 +203,7 @@ export default function GameRoomPage() {
       socket.off('chatHistory');
       socket.off('chatMessage');
       socket.off('drawing', handleDrawing);
-      socket.off('canvasCleared'); // Cleanup the new listener
+      socket.off('canvasCleared');
       socket.off('wordOptions');
       socket.off('roundStart');
       socket.off('roundStartingSoon');
@@ -199,7 +252,6 @@ export default function GameRoomPage() {
     socket.emit('chooseWord', { roomId, word, round: currentRound });
   };
   
-  // Handler for the new clear canvas button
   const handleClearCanvas = () => {
     if (isDrawer) {
       socket.emit('clearCanvas', { roomId });
@@ -228,28 +280,22 @@ export default function GameRoomPage() {
       <div className="flex flex-1 p-8 gap-8">
         <aside className="w-72 bg-[#1f1f1f] border border-[#3e3e3e] rounded-2xl p-4 flex flex-col">
           <h3 className="text-xl font-bold mb-4 flex items-center gap-2" style={{ fontFamily: "Kalam, cursive" }}><Users className="w-6 h-6"/> Players</h3>
-          <ul className="flex-1 overflow-y-auto space-y-2">
+          <div className="flex-1 overflow-y-auto space-y-2 pr-2">
             <AnimatePresence>
-                {players.map((p) => (
-                    <motion.li
+                {sortedPlayers.map((p) => (
+                    <PlayerCard
                         key={p.id}
-                        className="py-2 px-3 bg-[#282828] rounded-lg flex justify-between items-center"
-                        initial={{ opacity: 0, x: -20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: 20 }}
-                    >
-                        <span>
-                            {p.name} {p.name === hostName && <span className="text-xs text-blue-400">(Host)</span>}
-                            {p.id === socketId && <span className="text-xs text-green-400"> (You)</span>}
-                            {p.id === drawerId && <Edit className="w-4 h-4 inline-block ml-1 text-orange-400" />}
-                        </span>
-                        <span className="text-sm text-purple-400 font-bold">{points[p.name] || 0} pts</span>
-                    </motion.li>
+                        player={p}
+                        points={points[p.name] || 0}
+                        isHost={p.name === hostName}
+                        isYou={p.id === socketId}
+                        isDrawer={p.id === drawerId}
+                    />
                 ))}
             </AnimatePresence>
-          </ul>
+          </div>
         </aside>
-        <main className="flex-1 flex flex-col gap-4"> {/* Reduced gap */}
+        <main className="flex-1 flex flex-col gap-4">
           <div className="flex-[2] h-[32rem] bg-[#0d0d0d] rounded-2xl border border-[#3e3e3e] flex flex-col items-center justify-center p-4">
               <div className="w-full flex justify-between items-center mb-2 px-2 text-[#ffedd2]/80">
                   <div className="text-md font-semibold">Round: {currentRound} / {totalRounds}</div>
@@ -264,7 +310,6 @@ export default function GameRoomPage() {
                 canDraw={isDrawer && gameStarted && !showWordOptions}
               />
           </div>
-          {/* Controls for Drawer */}
           <div className="w-full h-12 flex justify-center items-center">
             {isDrawer && gameStarted && (
               <motion.button
