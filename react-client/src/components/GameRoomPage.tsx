@@ -234,9 +234,8 @@ export default function GameRoomPage() {
         setTimer((prev) => {
           if (prev <= 1) {
             clearInterval(timerRef.current!)
-            if (drawerId === socket.id) {
-              socket.emit("endDrawingTurn")
-            }
+            // NOTE: The client no longer tells the server when the turn ends.
+            // The server is now the authority on turn duration.
             return 0
           }
           return prev - 1
