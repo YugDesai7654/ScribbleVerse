@@ -415,6 +415,7 @@ io.on('connection', (socket: Socket) => {
 // --- Health Check & Server Start ---
 app.get("/health", (req, res) => {
   res.status(200).send("Server is up and running!");
+  
 });
 
 const PORT = process.env.PORT || 5000;
