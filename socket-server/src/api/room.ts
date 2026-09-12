@@ -15,10 +15,19 @@ export async function createRoom(roomId: string, hostName: string) {
 // User joins a room
 export async function joinRoom(roomId: string) {
   const room = await Room.findOne({ roomId });
-  console.log("room : ",room);
-  
+
   if (!room) {
     throw new Error('Room does not exist');
   }
+  return room;
+}
+
+// Promote a new host when the current host disconnects
+export async function updateHost(roomId: string, newHostName: string) {
+  const room = await Room.findOneAndUpdate(
+    { roomId },
+    { hostName: newHostName },
+    { new: true }
+  );
   return room;
 }

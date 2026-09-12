@@ -1,16 +1,16 @@
-import mongoose from "mongoose";
-import dotenv from 'dotenv';
+import mongoose from 'mongoose';
+import { logger } from '../logger';
 
-dotenv.config();
+export async function connectDB(mongoUri: string): Promise<void> {
+  await mongoose.connect(mongoUri);
+  logger.info('Connected to MongoDB');
+}
 
-const MONGO_URI = process.env.MONGO_URI!;
-// console.log("MONGO_URI in function : ",MONGO_URI);
+export function isDatabaseReady(): boolean {
+  return mongoose.connection.readyState === 1;
+}
 
-export function connectDB() {
-mongoose.connect(MONGO_URI)
-  .then(() => console.log('Connected to MongoDB'))
-  .catch(err => {
-        console.error('MongoDB connection error:', err);
-        process.exit(1);
-    });
+export async function disconnectDB(): Promise<void> {
+  await mongoose.disconnect();
+  logger.info('Disconnected from MongoDB');
 }

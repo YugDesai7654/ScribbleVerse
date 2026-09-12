@@ -7,5 +7,8 @@ export const roomSchema = new mongoose.Schema({
   });
 
 
-export const Room = mongoose.model('Room', roomSchema);
+// Guard against "Cannot overwrite `Room` model once compiled" if this module
+// ever gets re-imported against an already-populated mongoose registry (e.g.
+// certain test-runner module-isolation setups).
+export const Room = mongoose.models.Room || mongoose.model('Room', roomSchema);
 
