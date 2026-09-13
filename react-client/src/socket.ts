@@ -1,9 +1,10 @@
 import { io } from 'socket.io-client';
+import { API_BASE_URL } from './config';
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:4000';
-
-const socket = io(SOCKET_URL, { 
-  autoConnect: false 
+const socket = io(API_BASE_URL, {
+  autoConnect: false,
+  withCredentials: true, // send the httpOnly auth cookie with the handshake, so the
+                          // server can recognize logged-in users automatically
 });
 
 export default socket;

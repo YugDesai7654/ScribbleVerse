@@ -1,9 +1,11 @@
 "use client"
 
 import { motion, useScroll, useTransform } from "framer-motion"
+import { Link } from "react-router-dom"
 // import { useState, useEffect, useRef } from "react"
-import { Palette, Users, Crown, Trophy, MessageCircle, Play, ArrowRight, Sparkles, Zap, Target } from "lucide-react"
+import { Palette, Users, Crown, Trophy, MessageCircle, Play, ArrowRight, Sparkles, Zap, Target, LogIn, type LucideIcon } from "lucide-react"
 import SplashCursor from "./SplashCursor"
+import { useAuth } from "../contexts/useAuth"
 
 // // Cursor Trail Component
 // function CursorTrail() {
@@ -106,6 +108,34 @@ import SplashCursor from "./SplashCursor"
 //     </div>
 //   )
 // }
+
+function AccountNavigation() {
+  const { user, loading } = useAuth()
+
+  return (
+    <nav className="fixed top-5 right-5 z-40 flex items-center gap-3">
+      {user && (
+        <span className="hidden sm:inline text-[#ffedd2]/70 text-sm">
+          Hi, {user.displayName}
+        </span>
+      )}
+      <Link
+        to="/leaderboard"
+        className="inline-flex items-center gap-2 border border-[#f4d03f] text-[#f4d03f] px-4 py-2 rounded-full font-semibold bg-[#0d0d0d]/80 backdrop-blur hover:bg-[#f4d03f] hover:text-[#0d0d0d] transition-colors"
+      >
+        <Trophy className="w-4 h-4" /> Leaderboard
+      </Link>
+      {!loading && !user && (
+        <Link
+          to="/login"
+          className="inline-flex items-center gap-2 bg-[#ffedd2] text-[#0d0d0d] px-4 py-2 rounded-full font-semibold hover:bg-[#f4d03f] transition-colors"
+        >
+          <LogIn className="w-4 h-4" /> Log In
+        </Link>
+      )}
+    </nav>
+  )
+}
 
 // Floating particles background
 function FloatingParticles() {
@@ -281,7 +311,7 @@ function FeatureCard({
   description,
   delay = 0,
 }: {
-  icon: any
+  icon: LucideIcon
   title: string
   description: string
   delay?: number
@@ -508,9 +538,9 @@ function Footer() {
                 </a>
               </li>
               <li>
-                <a href="#" className="hover:text-[#ffedd2] transition-colors">
+                <Link to="/leaderboard" className="hover:text-[#ffedd2] transition-colors">
                   Leaderboard
-                </a>
+                </Link>
               </li>
               <li>
                 <a href="#" className="hover:text-[#ffedd2] transition-colors">
@@ -578,6 +608,7 @@ export default function ScribbleVerseLandingPage() {
     <div className="bg-[#0d0d0d] min-h-screen text-white">
       <link href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap" rel="stylesheet" />
       <SplashCursor />
+      <AccountNavigation />
 
       {/* <CursorTrail /> */}
       <HeroSection />

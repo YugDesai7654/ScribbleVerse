@@ -7,6 +7,7 @@ import socket from "../socket"
 import DrawingCanvas, { type DrawLine } from "./DrawingCanvas"
 import { motion, AnimatePresence } from "framer-motion"
 import { LogOut, Send, Users, Clock, Edit, Trophy, Eraser, Crown, MessageCircle, X } from "lucide-react"
+import { useAuth } from "../contexts/useAuth"
 
 type Score = { name: string; score: number }
 type Player = { id: string; name: string }
@@ -75,7 +76,11 @@ const PlayerCard = ({
 export default function GameRoomPage() {
   const { roomId } = useParams()
   const navigate = useNavigate()
-  const [name] = useState(() => localStorage.getItem("name") || "")
+  const { user, loading: authLoading } = useAuth()
+  const [guestName] = useState(() => localStorage.getItem("name") || "")
+  // A logged-in account's display name always takes priority over the guest
+  // name stashed in localStorage from the room-creation/join form.
+  const name = user?.displayName || guestName
   const [joined, setJoined] = useState(false)
   const [players, setPlayers] = useState<Player[]>([])
   const [hostName, setHostName] = useState<string>("")
@@ -181,6 +186,7 @@ export default function GameRoomPage() {
   }, []) // Run only on mount
 
   useEffect(() => {
+    if (authLoading) return // wait until we know whether the user is logged in
     if (!roomId || !name) {
       navigate("/room")
       return
@@ -299,13 +305,21 @@ export default function GameRoomPage() {
       socket.disconnect()
       if (timerRef.current) clearInterval(timerRef.current)
     }
-  }, [roomId, name, navigate])
+  }, [roomId, name, authLoading, navigate])
 
   useEffect(() => {
     if (chatEndRef.current) {
       chatEndRef.current.scrollIntoView({ behavior: "smooth" })
     }
   }, [chatMessages])
+
+  if (authLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-[#0d0d0d] text-[#ffedd2]">
+        Loading...
+      </div>
+    )
+  }
 
   if (!roomId || !name) {
     return <Navigate to="/room" replace />
@@ -324,7 +338,7 @@ export default function GameRoomPage() {
   const handleChatSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (!chatInput.trim() || drawerId === socket.id) return
-    socket.emit("chatMessage", { roomId, user: name, text: chatInput })
+    socket.emit("chatMessage", { roomId, user: name, text: chatInput.trim() })
     setChatInput("")
   }
 
@@ -586,6 +600,7 @@ export default function GameRoomPage() {
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
                 disabled={!joined || !gameStarted || isDrawer}
+                maxLength={200}
               />
               <motion.button
                 type="submit"

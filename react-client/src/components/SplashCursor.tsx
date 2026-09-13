@@ -74,9 +74,9 @@ export default function SplashCursor({
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    let pointers: Pointer[] = [pointerPrototype()];
+    const pointers: Pointer[] = [pointerPrototype()];
 
-    let config = {
+    const config = {
       SIM_RESOLUTION: SIM_RESOLUTION!,
       DYE_RESOLUTION: DYE_RESOLUTION!,
       CAPTURE_RESOLUTION: CAPTURE_RESOLUTION!,
@@ -149,11 +149,11 @@ export default function SplashCursor({
 
       const halfFloatTexType = isWebGL2
         ? (gl as WebGL2RenderingContext).HALF_FLOAT
-        : (halfFloat && (halfFloat as any).HALF_FLOAT_OES) || 0;
+        : halfFloat?.HALF_FLOAT_OES ?? 0;
 
-      let formatRGBA: any;
-      let formatRG: any;
-      let formatR: any;
+      let formatRGBA: { internalFormat: number; format: number } | null;
+      let formatRG: { internalFormat: number; format: number } | null;
+      let formatR: { internalFormat: number; format: number } | null;
 
       if (isWebGL2) {
         formatRGBA = getSupportedFormat(
@@ -178,6 +178,10 @@ export default function SplashCursor({
         formatRGBA = getSupportedFormat(gl, gl.RGBA, gl.RGBA, halfFloatTexType);
         formatRG = getSupportedFormat(gl, gl.RGBA, gl.RGBA, halfFloatTexType);
         formatR = getSupportedFormat(gl, gl.RGBA, gl.RGBA, halfFloatTexType);
+      }
+
+      if (!formatRGBA || !formatRG || !formatR) {
+        throw new Error("Required WebGL texture formats are not supported");
       }
 
       return {
@@ -308,7 +312,7 @@ export default function SplashCursor({
     }
 
     function getUniforms(program: WebGLProgram) {
-      let uniforms: Record<string, WebGLUniformLocation | null> = {};
+      const uniforms: Record<string, WebGLUniformLocation | null> = {};
       const uniformCount = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
       for (let i = 0; i < uniformCount; i++) {
         const uniformInfo = gl.getActiveUniform(program, i);
@@ -970,7 +974,7 @@ export default function SplashCursor({
       const w = gl.drawingBufferWidth;
       const h = gl.drawingBufferHeight;
       const aspectRatio = w / h;
-      let aspect = aspectRatio < 1 ? 1 / aspectRatio : aspectRatio;
+      const aspect = aspectRatio < 1 ? 1 / aspectRatio : aspectRatio;
       const min = Math.round(resolution);
       const max = Math.round(resolution * aspect);
       if (w > h) {
@@ -989,6 +993,7 @@ export default function SplashCursor({
 
     let lastUpdateTime = Date.now();
     let colorUpdateTimer = 0.0;
+    let animationFrameId: number | null = null;
 
     function updateFrame() {
       const dt = calcDeltaTime();
@@ -997,7 +1002,7 @@ export default function SplashCursor({
       applyInputs();
       step(dt);
       render(null);
-      requestAnimationFrame(updateFrame);
+      animationFrameId = requestAnimationFrame(updateFrame);
     }
 
     function calcDeltaTime() {
@@ -1417,13 +1422,14 @@ export default function SplashCursor({
       return ((value - min) % range) + min;
     }
 
-    window.addEventListener("mousedown", (e) => {
+    function handleMouseDown(e: MouseEvent) {
       const pointer = pointers[0];
       const posX = scaleByPixelRatio(e.clientX);
       const posY = scaleByPixelRatio(e.clientY);
       updatePointerDownData(pointer, -1, posX, posY);
       clickSplat(pointer);
-    });
+    }
+    window.addEventListener("mousedown", handleMouseDown);
 
     function handleFirstMouseMove(e: MouseEvent) {
       const pointer = pointers[0];
@@ -1436,13 +1442,14 @@ export default function SplashCursor({
     }
     document.body.addEventListener("mousemove", handleFirstMouseMove);
 
-    window.addEventListener("mousemove", (e) => {
+    function handleMouseMove(e: MouseEvent) {
       const pointer = pointers[0];
       const posX = scaleByPixelRatio(e.clientX);
       const posY = scaleByPixelRatio(e.clientY);
       const color = pointer.color;
       updatePointerMoveData(pointer, posX, posY, color);
-    });
+    }
+    window.addEventListener("mousemove", handleMouseMove);
 
     function handleFirstTouchStart(e: TouchEvent) {
       const touches = e.targetTouches;
@@ -1457,57 +1464,53 @@ export default function SplashCursor({
     }
     document.body.addEventListener("touchstart", handleFirstTouchStart);
 
-    window.addEventListener(
-      "touchstart",
-      (e) => {
-        const touches = e.targetTouches;
-        const pointer = pointers[0];
-        for (let i = 0; i < touches.length; i++) {
-          const posX = scaleByPixelRatio(touches[i].clientX);
-          const posY = scaleByPixelRatio(touches[i].clientY);
-          updatePointerDownData(pointer, touches[i].identifier, posX, posY);
-        }
-      },
-      false
-    );
+    function handleTouchStart(e: TouchEvent) {
+      const touches = e.targetTouches;
+      const pointer = pointers[0];
+      for (let i = 0; i < touches.length; i++) {
+        const posX = scaleByPixelRatio(touches[i].clientX);
+        const posY = scaleByPixelRatio(touches[i].clientY);
+        updatePointerDownData(pointer, touches[i].identifier, posX, posY);
+      }
+    }
+    window.addEventListener("touchstart", handleTouchStart, false);
 
-    window.addEventListener(
-      "touchmove",
-      (e) => {
-        const touches = e.targetTouches;
-        const pointer = pointers[0];
-        for (let i = 0; i < touches.length; i++) {
-          const posX = scaleByPixelRatio(touches[i].clientX);
-          const posY = scaleByPixelRatio(touches[i].clientY);
-          updatePointerMoveData(pointer, posX, posY, pointer.color);
-        }
-      },
-      false
-    );
+    function handleTouchMove(e: TouchEvent) {
+      const touches = e.targetTouches;
+      const pointer = pointers[0];
+      for (let i = 0; i < touches.length; i++) {
+        const posX = scaleByPixelRatio(touches[i].clientX);
+        const posY = scaleByPixelRatio(touches[i].clientY);
+        updatePointerMoveData(pointer, posX, posY, pointer.color);
+      }
+    }
+    window.addEventListener("touchmove", handleTouchMove, false);
 
-    window.addEventListener("touchend", (e) => {
+    function handleTouchEnd(e: TouchEvent) {
       const touches = e.changedTouches;
       const pointer = pointers[0];
       for (let i = 0; i < touches.length; i++) {
         updatePointerUpData(pointer);
       }
-    });
-  }, [
-    SIM_RESOLUTION,
-    DYE_RESOLUTION,
-    CAPTURE_RESOLUTION,
-    DENSITY_DISSIPATION,
-    VELOCITY_DISSIPATION,
-    PRESSURE,
-    PRESSURE_ITERATIONS,
-    CURL,
-    SPLAT_RADIUS,
-    SPLAT_FORCE,
-    SHADING,
-    COLOR_UPDATE_SPEED,
-    BACK_COLOR,
-    TRANSPARENT,
-  ]);
+    }
+    window.addEventListener("touchend", handleTouchEnd);
+
+    return () => {
+      if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
+      document.body.removeEventListener("mousemove", handleFirstMouseMove);
+      document.body.removeEventListener("touchstart", handleFirstTouchStart);
+      window.removeEventListener("mousedown", handleMouseDown);
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("touchstart", handleTouchStart);
+      window.removeEventListener("touchmove", handleTouchMove);
+      window.removeEventListener("touchend", handleTouchEnd);
+    };
+    // Intentionally run once on mount: this initializes a WebGL context + animation
+    // loop. Re-running it on prop changes would tear down and rebuild the GPU
+    // context, which is unnecessary for a decorative effect always used with
+    // static props in this codebase.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="fixed top-0 left-0 z-50 pointer-events-none w-full h-full">

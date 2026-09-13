@@ -1,5 +1,5 @@
 "use client"
-import { useRef, useEffect, useState } from "react"
+import { useCallback, useRef, useEffect, useState } from "react"
 import type React from "react"
 
 export type DrawLine = {
@@ -38,7 +38,7 @@ export default function DrawingCanvas({ width, height, onDrawLine, remoteLines, 
     remoteLines.forEach((line) => drawLineOnCanvas(line, ctx))
   }, [remoteLines, width, height]) // Rerun when lines or dimensions change
 
-  const getPointInCanvas = (e: MouseEvent | TouchEvent | React.MouseEvent): Point => {
+  const getPointInCanvas = useCallback((e: MouseEvent | TouchEvent | React.MouseEvent): Point => {
     const canvas = canvasRef.current
     if (!canvas) return { x: 0, y: 0 }
     const rect = canvas.getBoundingClientRect()
@@ -58,7 +58,7 @@ export default function DrawingCanvas({ width, height, onDrawLine, remoteLines, 
     const x = clientX - rect.left
     const y = clientY - rect.top
     return { x, y }
-  }
+  }, [])
 
   const drawLineOnCanvas = (line: DrawLine, ctx: CanvasRenderingContext2D) => {
     const { prevPoint, currentPoint, color: line_color } = line
@@ -73,7 +73,7 @@ export default function DrawingCanvas({ width, height, onDrawLine, remoteLines, 
     ctx.stroke()
   }
 
-  const handleStartDrawing = (e: MouseEvent | TouchEvent | React.MouseEvent) => {
+  const handleStartDrawing = useCallback((e: MouseEvent | TouchEvent | React.MouseEvent) => {
     if (!canDraw) return
 
     // Only prevent default for touch events
@@ -84,9 +84,9 @@ export default function DrawingCanvas({ width, height, onDrawLine, remoteLines, 
     setIsDrawing(true)
     const currentPoint = getPointInCanvas(e)
     prevPointRef.current = currentPoint
-  }
+  }, [canDraw, getPointInCanvas])
 
-  const handleDraw = (e: MouseEvent | TouchEvent | React.MouseEvent) => {
+  const handleDraw = useCallback((e: MouseEvent | TouchEvent | React.MouseEvent) => {
     if (!isDrawing || !canDraw) return
 
     // Only prevent default for touch events
@@ -102,15 +102,15 @@ export default function DrawingCanvas({ width, height, onDrawLine, remoteLines, 
     }
     onDrawLine(line)
     prevPointRef.current = currentPoint
-  }
+  }, [canDraw, color, getPointInCanvas, isDrawing, onDrawLine])
 
-  const handleEndDrawing = (e?: React.MouseEvent | TouchEvent) => {
+  const handleEndDrawing = useCallback((e?: React.MouseEvent | TouchEvent) => {
     if (e && "touches" in e) {
       e.preventDefault()
     }
     setIsDrawing(false)
     prevPointRef.current = null
-  }
+  }, [])
 
   // Effect to handle touch events with non-passive listeners
   useEffect(() => {
@@ -135,7 +135,7 @@ export default function DrawingCanvas({ width, height, onDrawLine, remoteLines, 
       canvas.removeEventListener("touchend", handleTouchEnd)
       canvas.removeEventListener("touchcancel", handleTouchEnd)
     }
-  }, [canDraw, isDrawing, color]) // Dependencies for the handlers
+  }, [handleDraw, handleEndDrawing, handleStartDrawing]) // Dependencies for the handlers
 
   return (
     <canvas

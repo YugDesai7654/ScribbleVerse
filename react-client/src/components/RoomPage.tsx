@@ -1,12 +1,10 @@
 "use client"
-import { useNavigate } from "react-router-dom"
-import React, { useState, useRef, memo } from "react"
-import { io } from "socket.io-client"
+import { useNavigate, Link } from "react-router-dom"
+import React, { useState, useRef, useEffect, memo } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Users, PlusCircle, Paintbrush, Trophy } from "lucide-react"
-
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL;
-const socket = io(SOCKET_URL, { autoConnect: false })
+import { Users, PlusCircle, Paintbrush, Trophy, LogIn, LogOut, Award } from "lucide-react"
+import socket from "../socket"
+import { useAuth } from "../contexts/useAuth"
 
 // Wrap the component in memo to prevent re-renders on parent state change
 const FloatingParticles = memo(function FloatingParticles() {
@@ -45,6 +43,13 @@ export default function RoomPage() {
   const [rounds, setRounds] = useState(3)
   const [timePerRound, setTimePerRound] = useState(60)
   const navigate = useNavigate()
+  const { user, logout } = useAuth()
+
+  // If the player is logged in, default the name field to their account's
+  // display name (they can still change it for this session if they want).
+  useEffect(() => {
+    if (user) setName(user.displayName)
+  }, [user])
 
   const [isEntering, setIsEntering] = useState(false)
   const sceneRef = useRef<HTMLDivElement>(null)
@@ -102,6 +107,7 @@ export default function RoomPage() {
     })
 
     socket.once("createRoomSuccess", ({ roomId }) => {
+      socket.disconnect()
       triggerDoorOpen(`/room/${roomId}`)
     })
 
@@ -141,6 +147,25 @@ export default function RoomPage() {
     <div className="flex flex-col items-center justify-center min-h-screen bg-[#0d0d0d] text-[#ffedd2] p-4 overflow-hidden">
       <FloatingParticles />
       <link href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap" rel="stylesheet" />
+
+      {/* Auth status bar */}
+      <div className="fixed top-4 right-4 z-30 flex items-center gap-3 text-sm">
+        <Link to="/leaderboard" className="flex items-center gap-1 text-[#ffedd2]/70 hover:text-[#ffedd2] transition-colors">
+          <Award className="w-4 h-4" /> Leaderboard
+        </Link>
+        {user ? (
+          <button
+            onClick={() => logout()}
+            className="flex items-center gap-1 text-[#ffedd2]/70 hover:text-[#ffedd2] transition-colors"
+          >
+            <LogOut className="w-4 h-4" /> Log out ({user.displayName})
+          </button>
+        ) : (
+          <Link to="/login" className="flex items-center gap-1 text-[#ffedd2]/70 hover:text-[#ffedd2] transition-colors">
+            <LogIn className="w-4 h-4" /> Log in
+          </Link>
+        )}
+      </div>
 
       {/* Zoom effect overlay */}
       <AnimatePresence>
@@ -353,6 +378,7 @@ export default function RoomPage() {
                         value={name}
                         onChange={(e) => setName(e.target.value)}
                         autoFocus
+                        maxLength={20}
                         variants={inputVariants}
                       />
                       <motion.input
@@ -360,6 +386,7 @@ export default function RoomPage() {
                         placeholder="Room Code"
                         value={roomCode}
                         onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
+                        maxLength={8}
                         variants={inputVariants}
                       />
                       {error && <div className="text-red-400 text-sm text-center">{error}</div>}
@@ -390,6 +417,7 @@ export default function RoomPage() {
                         value={name}
                         onChange={(e) => setName(e.target.value)}
                         autoFocus
+                        maxLength={20}
                         variants={inputVariants}
                       />
                       <motion.div variants={inputVariants} className="flex gap-4">
