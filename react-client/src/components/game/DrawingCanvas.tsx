@@ -33,7 +33,7 @@ export default function DrawingCanvas({ ops, canDraw, tool, color, size, onSegme
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [box, setBox] = useState({ width: 0, height: 0 })
   const painted = useRef<DrawOp[]>([])
-  const active = useRef<{ strokeId: string; last: Point } | null>(null)
+  const active = useRef<{ pointerId: number; strokeId: string; last: Point } | null>(null)
 
   // Fit the largest 4:3 rectangle into the available space.
   useLayoutEffect(() => {
@@ -84,6 +84,7 @@ export default function DrawingCanvas({ ops, canDraw, tool, color, size, onSegme
 
   const handleDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!canDraw || (e.pointerType === "mouse" && e.button !== 0)) return
+    if (active.current) return // one pointer at a time: a second finger or a palm is ignored
     e.currentTarget.setPointerCapture(e.pointerId)
     const point = toPoint(e)
     const strokeId = newStrokeId()
@@ -91,20 +92,21 @@ export default function DrawingCanvas({ ops, canDraw, tool, color, size, onSegme
       onFill({ type: "fill", strokeId, x: point.x, y: point.y, color })
       return
     }
-    active.current = { strokeId, last: point }
+    active.current = { pointerId: e.pointerId, strokeId, last: point }
     onSegment({ strokeId, from: null, to: point, color, size }) // a dot for single taps
   }
 
   const handleMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const stroke = active.current
-    if (!canDraw || !stroke) return
+    if (!canDraw || !stroke || e.pointerId !== stroke.pointerId) return
     const point = toPoint(e)
     if (Math.hypot(point.x - stroke.last.x, point.y - stroke.last.y) < MIN_STEP) return
     onSegment({ strokeId: stroke.strokeId, from: stroke.last, to: point, color, size })
     stroke.last = point
   }
 
-  const handleUp = () => {
+  const handleUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!active.current || e.pointerId !== active.current.pointerId) return
     active.current = null
     onStrokeEnd()
   }

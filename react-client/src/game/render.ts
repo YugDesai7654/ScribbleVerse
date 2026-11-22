@@ -41,23 +41,32 @@ function drawSegment(ctx: CanvasRenderingContext2D, segment: StrokeSegment, widt
 }
 
 /**
- * Scanline flood fill in device pixels, so it works the same whatever transform
- * the context has. Fills the region connected to (x, y) whose colour is within
- * FILL_TOLERANCE of the seed pixel.
+ * Scanline flood fill on raw RGBA pixels. Fills the region connected to (x, y)
+ * whose colour is within FILL_TOLERANCE of the seed pixel, then runs the edge
+ * clean-up. The clean-up only scans the filled region's bounding box grown by
+ * EDGE_PASSES, since it can't reach further (BUG-030).
  */
-export function floodFill(ctx: CanvasRenderingContext2D, x: number, y: number, color: string) {
-  const { width, height } = ctx.canvas
+export function fillPixels(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  rgb: [number, number, number]
+) {
   if (!width || !height) return
-  const startX = Math.min(width - 1, Math.max(0, Math.floor(x * width)))
-  const startY = Math.min(height - 1, Math.max(0, Math.floor(y * height)))
-  const image = ctx.getImageData(0, 0, width, height)
-  const data = image.data
+  const startX = Math.min(width - 1, Math.max(0, Math.floor(x)))
+  const startY = Math.min(height - 1, Math.max(0, Math.floor(y)))
   const seed = (startY * width + startX) * 4
   const target = [data[seed], data[seed + 1], data[seed + 2], data[seed + 3]]
-  const [r, g, b] = hexToRgb(color)
+  const [r, g, b] = rgb
   if (target[0] === r && target[1] === g && target[2] === b && target[3] === 255) return
 
   const visited = new Uint8Array(width * height)
+  let minX = width
+  let maxX = -1
+  let minY = height
+  let maxY = -1
   const matches = (pixel: number) => {
     if (visited[pixel]) return false
     const i = pixel * 4
@@ -83,10 +92,14 @@ export function floodFill(ctx: CanvasRenderingContext2D, x: number, y: number, c
     let px = stack.pop()!
     const row = py * width
     while (px > 0 && matches(row + px - 1)) px--
+    if (px < minX) minX = px
+    if (py < minY) minY = py
+    if (py > maxY) maxY = py
     let above = false
     let below = false
     for (; px < width && matches(row + px); px++) {
       paint(row + px)
+      if (px > maxX) maxX = px
       if (py > 0) {
         const up = matches(row - width + px)
         if (up && !above) stack.push(px, py - 1)
@@ -99,32 +112,48 @@ export function floodFill(ctx: CanvasRenderingContext2D, x: number, y: number, c
       }
     }
   }
+  if (maxX < 0) return
+
   // Anti-aliased pixels along the outline are part-way between the region and
   // the line, so some fall outside the tolerance and would stay as a light
   // fringe (BUG-008). Pull in neighbours that are still closer to the region's
   // colour than to a solid line, without eating into the line itself.
+  const x0 = Math.max(0, minX - EDGE_PASSES)
+  const x1 = Math.min(width - 1, maxX + EDGE_PASSES)
+  const y0 = Math.max(0, minY - EDGE_PASSES)
+  const y1 = Math.min(height - 1, maxY + EDGE_PASSES)
   for (let pass = 0; pass < EDGE_PASSES; pass++) {
     const edge: number[] = []
-    for (let pixel = 0; pixel < visited.length; pixel++) {
-      if (visited[pixel]) continue
-      const px = pixel % width
-      const touchesFill =
-        (px > 0 && visited[pixel - 1] === 1) ||
-        (px < width - 1 && visited[pixel + 1] === 1) ||
-        (pixel >= width && visited[pixel - width] === 1) ||
-        (pixel < visited.length - width && visited[pixel + width] === 1)
-      if (!touchesFill) continue
-      const i = pixel * 4
-      const distance = Math.max(
-        Math.abs(data[i] - target[0]),
-        Math.abs(data[i + 1] - target[1]),
-        Math.abs(data[i + 2] - target[2])
-      )
-      if (distance <= EDGE_TOLERANCE) edge.push(pixel)
+    for (let py = y0; py <= y1; py++) {
+      for (let px = x0; px <= x1; px++) {
+        const pixel = py * width + px
+        if (visited[pixel]) continue
+        const touchesFill =
+          (px > 0 && visited[pixel - 1] === 1) ||
+          (px < width - 1 && visited[pixel + 1] === 1) ||
+          (py > 0 && visited[pixel - width] === 1) ||
+          (py < height - 1 && visited[pixel + width] === 1)
+        if (!touchesFill) continue
+        const i = pixel * 4
+        const distance = Math.max(
+          Math.abs(data[i] - target[0]),
+          Math.abs(data[i + 1] - target[1]),
+          Math.abs(data[i + 2] - target[2])
+        )
+        if (distance <= EDGE_TOLERANCE) edge.push(pixel)
+      }
     }
     if (edge.length === 0) break
     edge.forEach(paint)
   }
+}
+
+/** Fills at normalised (x, y) of the canvas, in device pixels so any context transform is irrelevant. */
+export function floodFill(ctx: CanvasRenderingContext2D, x: number, y: number, color: string) {
+  const { width, height } = ctx.canvas
+  if (!width || !height) return
+  const image = ctx.getImageData(0, 0, width, height)
+  fillPixels(image.data, width, height, x * width, y * height, hexToRgb(color))
   ctx.putImageData(image, 0, 0)
 }
 
