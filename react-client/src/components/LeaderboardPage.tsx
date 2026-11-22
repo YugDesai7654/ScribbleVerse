@@ -27,7 +27,6 @@ export default function LeaderboardPage() {
 
   return (
     <div className="min-h-screen bg-[#0d0d0d] text-[#ffedd2] p-6 md:p-10">
-      <link href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap" rel="stylesheet" />
 
       <div className="max-w-2xl mx-auto">
         <Link to="/" className="inline-flex items-center gap-2 text-[#ffedd2]/70 hover:text-[#ffedd2] mb-6 transition-colors">

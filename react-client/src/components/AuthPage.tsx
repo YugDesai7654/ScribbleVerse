@@ -48,7 +48,6 @@ export default function AuthPage() {
 
   return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-[#0d0d0d] text-[#ffedd2] p-4">
-      <link href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap" rel="stylesheet" />
 
       <motion.div
         initial={{ opacity: 0, y: -30 }}

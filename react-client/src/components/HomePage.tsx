@@ -2,112 +2,10 @@
 
 import { motion, useScroll, useTransform } from "framer-motion"
 import { Link } from "react-router-dom"
-// import { useState, useEffect, useRef } from "react"
+import { useEffect, useState } from "react"
 import { Palette, Users, Crown, Trophy, MessageCircle, Play, ArrowRight, Sparkles, Zap, Target, LogIn, type LucideIcon } from "lucide-react"
 import SplashCursor from "./SplashCursor"
 import { useAuth } from "../contexts/useAuth"
-
-// // Cursor Trail Component
-// function CursorTrail() {
-//   const [trail, setTrail] = useState<Array<{ x: number; y: number; id: number; timestamp: number }>>([])
-//   const trailRef = useRef<Array<{ x: number; y: number; id: number; timestamp: number }>>([])
-//   const idCounter = useRef(0)
-
-//   useEffect(() => {
-//     const handleMouseMove = (e: MouseEvent) => {
-//       const newPoint = {
-//         x: e.clientX,
-//         y: e.clientY,
-//         id: idCounter.current++,
-//         timestamp: Date.now(),
-//       }
-
-//       trailRef.current = [...trailRef.current, newPoint].slice(-50) // Keep last 50 points
-//       setTrail([...trailRef.current])
-//     }
-
-//     // Clean up old points
-//     const cleanupInterval = setInterval(() => {
-//       const now = Date.now()
-//       trailRef.current = trailRef.current.filter((point) => now - point.timestamp < 2000) // Keep points for 2 seconds
-//       setTrail([...trailRef.current])
-//     }, 100)
-
-//     document.addEventListener("mousemove", handleMouseMove)
-
-//     return () => {
-//       document.removeEventListener("mousemove", handleMouseMove)
-//       clearInterval(cleanupInterval)
-//     }
-//   }, [])
-
-//   if (trail.length < 2) return null
-
-//   // Create SVG path from trail points
-//   const pathData = trail.reduce((path, point, index) => {
-//     if (index === 0) {
-//       return `M ${point.x} ${point.y}`
-//     }
-//     return `${path} L ${point.x} ${point.y}`
-//   }, "")
-
-//   return (
-//     <div className="fixed inset-0 pointer-events-none z-50">
-//       <svg className="w-full h-full">
-//         <defs>
-//           <linearGradient id="trailGradient" x1="0%" y1="0%" x2="100%" y2="0%">
-//             <stop offset="0%" stopColor="#ffedd2" stopOpacity="0" />
-//             <stop offset="50%" stopColor="#ffedd2" stopOpacity="0.6" />
-//             <stop offset="100%" stopColor="#ffedd2" stopOpacity="0.9" />
-//           </linearGradient>
-//           <filter id="glow">
-//             <feGaussianBlur stdDeviation="3" result="coloredBlur" />
-//             <feMerge>
-//               <feMergeNode in="coloredBlur" />
-//               <feMergeNode in="SourceGraphic" />
-//             </feMerge>
-//           </filter>
-//         </defs>
-//         {trail.length > 1 && (
-//           <motion.path
-//             d={pathData}
-//             stroke="url(#trailGradient)"
-//             strokeWidth="3"
-//             fill="none"
-//             strokeLinecap="round"
-//             strokeLinejoin="round"
-//             filter="url(#glow)"
-//             initial={{ pathLength: 0, opacity: 0 }}
-//             animate={{ pathLength: 1, opacity: 1 }}
-//             exit={{ opacity: 0 }}
-//             transition={{ duration: 0.3, ease: "easeOut" }}
-//           />
-//         )}
-
-//         {/* Add sparkle effects along the trail */}
-//         {trail.slice(-10).map((point, index) => {
-//           const age = Date.now() - point.timestamp
-//           const opacity = Math.max(0, 1 - age / 2000)
-
-//           return (
-//             <motion.circle
-//               key={point.id}
-//               cx={point.x}
-//               cy={point.y}
-//               r="2"
-//               fill="#ffedd2"
-//               opacity={opacity * 0.7}
-//               initial={{ scale: 0 }}
-//               animate={{ scale: 1 }}
-//               exit={{ scale: 0, opacity: 0 }}
-//               transition={{ duration: 0.2 }}
-//             />
-//           )
-//         })}
-//       </svg>
-//     </div>
-//   )
-// }
 
 function AccountNavigation() {
   const { user, loading } = useAuth()
@@ -191,8 +89,8 @@ function HeroSection() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.8, delay: 0.2 }}
         >
-          One player draws, others guess in real-time. Create rooms, challenge friends, earn rewards, and chat your way
-          to victory!
+          One player draws, everyone else races to guess in real time. Create a room, invite friends with a link,
+          and chat your way to victory!
         </motion.p>
 
         <motion.div
@@ -201,22 +99,24 @@ function HeroSection() {
           transition={{ duration: 0.8, delay: 0.4 }}
           className="flex flex-col sm:flex-row gap-4 justify-center items-center"
         >
-          <motion.button
-            className="bg-gradient-to-r from-[#ffedd2] to-[#f4d03f] text-[#0d0d0d] px-8 py-4 rounded-full font-bold text-lg flex items-center gap-2 hover:shadow-lg hover:shadow-[#ffedd2]/20 transition-all duration-300"
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-          >
-            <Play className="w-5 h-5" />
-            <a href="/room">Start Playing Now</a>
-          </motion.button>
+          <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+            <Link
+              to="/room"
+              className="bg-gradient-to-r from-[#ffedd2] to-[#f4d03f] text-[#0d0d0d] px-8 py-4 rounded-full font-bold text-lg flex items-center gap-2 hover:shadow-lg hover:shadow-[#ffedd2]/20 transition-shadow duration-300"
+            >
+              <Play className="w-5 h-5" />
+              Start Playing Now
+            </Link>
+          </motion.div>
 
-          <motion.button
-            className="border-2 border-[#ffedd2] text-[#ffedd2] px-8 py-4 rounded-full font-bold text-lg hover:bg-[#ffedd2] hover:text-[#0d0d0d] transition-all duration-300"
+          <motion.a
+            href="#how-it-works"
+            className="border-2 border-[#ffedd2] text-[#ffedd2] px-8 py-4 rounded-full font-bold text-lg hover:bg-[#ffedd2] hover:text-[#0d0d0d] transition-colors duration-300"
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
           >
-            Watch Demo
-          </motion.button>
+            How to Play
+          </motion.a>
         </motion.div>
       </motion.div>
 
@@ -345,37 +245,37 @@ function FeaturesSection() {
       icon: Palette,
       title: "Real-time Drawing",
       description:
-        "Express your creativity with smooth, responsive drawing tools. Watch as your masterpiece comes to life in real-time for all players to see.",
+        "A full colour palette, brush sizes, eraser and undo. Every stroke appears instantly for everyone, on any screen size.",
     },
     {
       icon: Users,
       title: "Multiplayer Rooms",
       description:
-        "Create private rooms for friends or join public games. Easy room management with customizable settings and player limits.",
+        "Create a private room in one click and invite friends with a link. Choose the rounds, turn time and player limit.",
     },
     {
       icon: Crown,
       title: "Host Controls",
       description:
-        "Take charge as the room host. Start games, manage players, set difficulty levels, and keep the fun flowing smoothly.",
+        "The host starts each game and can kick off a rematch. If the host leaves, another player takes over automatically.",
     },
     {
       icon: Trophy,
-      title: "Rewards System",
+      title: "Scores & Leaderboard",
       description:
-        "Earn points for correct guesses and creative drawings. Climb the leaderboards and unlock achievements as you play.",
+        "Fast guesses earn more points, and drawers score for every correct guess. Sign in to track your stats on the leaderboard.",
     },
     {
       icon: MessageCircle,
       title: "Live Chat",
       description:
-        "Communicate with players through integrated chat. Share hints, celebrate victories, and build connections while you play.",
+        "Guess right in the chat. You get a private nudge when you're close, and players who already guessed get their own chat.",
     },
     {
       icon: Zap,
-      title: "Lightning Fast",
+      title: "Hints as Time Runs Out",
       description:
-        "Experience lag-free gameplay with our optimized real-time engine. Every stroke and guess happens instantly across all devices.",
+        "Letters are revealed one by one as the timer runs down, so every word stays guessable.",
     },
   ]
 
@@ -429,13 +329,13 @@ function HowItWorksSection() {
     },
     {
       number: "03",
-      title: "Earn Rewards",
-      description: "Score points for correct guesses and creative drawings. Climb the leaderboard!",
+      title: "Score Points",
+      description: "Score for fast guesses and for drawings others can guess. Climb the leaderboard!",
     },
   ]
 
   return (
-    <section className="py-20 px-6 bg-gradient-to-b from-[#0d0d0d] to-[#1f1f1f]">
+    <section id="how-it-works" className="py-20 px-6 bg-gradient-to-b from-[#0d0d0d] to-[#1f1f1f] scroll-mt-16">
       <div className="container mx-auto">
         <motion.div
           className="text-center mb-16"
@@ -498,18 +398,19 @@ function CTASection() {
           </h2>
 
           <p className="text-xl text-[#ffedd2]/70 mb-8 max-w-2xl mx-auto">
-            Join thousands of players already having fun. Create your first room and start playing in under 30 seconds!
+            Create your first room and start playing in under 30 seconds. No account needed.
           </p>
 
-          <motion.button
-            className="bg-gradient-to-r from-[#ffedd2] to-[#f4d03f] text-[#0d0d0d] px-10 py-5 rounded-full font-bold text-xl flex items-center gap-3 mx-auto hover:shadow-lg hover:shadow-[#ffedd2]/20 transition-all duration-300"
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-          >
-            <Target className="w-6 h-6" />
-            <a href="/room">Launch Game Now</a>
-            <ArrowRight className="w-6 h-6" />
-          </motion.button>
+          <motion.div className="w-fit mx-auto" whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+            <Link
+              to="/room"
+              className="bg-gradient-to-r from-[#ffedd2] to-[#f4d03f] text-[#0d0d0d] px-10 py-5 rounded-full font-bold text-xl flex items-center gap-3 hover:shadow-lg hover:shadow-[#ffedd2]/20 transition-shadow duration-300"
+            >
+              <Target className="w-6 h-6" />
+              Launch Game Now
+              <ArrowRight className="w-6 h-6" />
+            </Link>
+          </motion.div>
         </motion.div>
       </div>
     </section>
@@ -533,19 +434,19 @@ function Footer() {
             <h4 className="text-lg font-semibold text-[#ffedd2] mb-4">Game</h4>
             <ul className="space-y-2 text-[#ffedd2]/70">
               <li>
-                <a href="#" className="hover:text-[#ffedd2] transition-colors">
+                <a href="#how-it-works" className="hover:text-[#ffedd2] transition-colors">
                   How to Play
                 </a>
+              </li>
+              <li>
+                <Link to="/room" className="hover:text-[#ffedd2] transition-colors">
+                  Play Now
+                </Link>
               </li>
               <li>
                 <Link to="/leaderboard" className="hover:text-[#ffedd2] transition-colors">
                   Leaderboard
                 </Link>
-              </li>
-              <li>
-                <a href="#" className="hover:text-[#ffedd2] transition-colors">
-                  Achievements
-                </a>
               </li>
             </ul>
           </div>
@@ -554,39 +455,24 @@ function Footer() {
             <h4 className="text-lg font-semibold text-[#ffedd2] mb-4">Support</h4>
             <ul className="space-y-2 text-[#ffedd2]/70">
               <li>
-                <a href="#" className="hover:text-[#ffedd2] transition-colors">
-                  Help Center
-                </a>
-              </li>
-              <li>
                 <a href="mailto:yugd7654@gmail.com" className="hover:text-[#ffedd2] transition-colors">
                   Contact Us
                 </a>
               </li>
               <li>
-                <a href="#" className="hover:text-[#ffedd2] transition-colors">
-                  Bug Reports
+                <a href="https://github.com/YugDesai7654/ScribbleVerse/issues" target="_blank" rel="noreferrer" className="hover:text-[#ffedd2] transition-colors">
+                  Report a Bug
                 </a>
               </li>
             </ul>
           </div>
 
           <div>
-            <h4 className="text-lg font-semibold text-[#ffedd2] mb-4">Legal</h4>
+            <h4 className="text-lg font-semibold text-[#ffedd2] mb-4">Project</h4>
             <ul className="space-y-2 text-[#ffedd2]/70">
               <li>
-                <a href="#" className="hover:text-[#ffedd2] transition-colors">
-                  Privacy Policy
-                </a>
-              </li>
-              <li>
-                <a href="#" className="hover:text-[#ffedd2] transition-colors">
-                  Terms of Service
-                </a>
-              </li>
-              <li>
-                <a href="#" className="hover:text-[#ffedd2] transition-colors">
-                  Cookie Policy
+                <a href="https://github.com/YugDesai7654/ScribbleVerse" target="_blank" rel="noreferrer" className="hover:text-[#ffedd2] transition-colors">
+                  Source on GitHub
                 </a>
               </li>
             </ul>
@@ -594,7 +480,7 @@ function Footer() {
         </div>
 
         <div className="border-t border-[#3e3e3e] mt-8 pt-8 text-center text-[#ffedd2]/70">
-          <p>&copy; 2025 ScribbleVerse. All rights reserved.</p>
+          <p>&copy; {new Date().getFullYear()} ScribbleVerse. All rights reserved.</p>
         </div>
       </div>
     </footer>
@@ -603,14 +489,30 @@ function Footer() {
 
 
 // Main Component
+/**
+ * The fluid cursor is a full-screen WebGL simulation: lovely on a desktop, but
+ * it drains phones and ignores reduced-motion preferences, so it's opt-in by
+ * device capability.
+ */
+function useFancyCursor() {
+  const [enabled, setEnabled] = useState(false)
+  useEffect(() => {
+    const query = window.matchMedia("(pointer: fine) and (prefers-reduced-motion: no-preference)")
+    const update = () => setEnabled(query.matches)
+    update()
+    query.addEventListener("change", update)
+    return () => query.removeEventListener("change", update)
+  }, [])
+  return enabled
+}
+
 export default function ScribbleVerseLandingPage() {
+  const fancyCursor = useFancyCursor()
   return (
     <div className="bg-[#0d0d0d] min-h-screen text-white">
-      <link href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap" rel="stylesheet" />
-      <SplashCursor />
+      {fancyCursor && <SplashCursor />}
       <AccountNavigation />
 
-      {/* <CursorTrail /> */}
       <HeroSection />
       <FeaturesSection />
       <HowItWorksSection />

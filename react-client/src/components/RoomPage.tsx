@@ -1,5 +1,5 @@
 "use client"
-import { useNavigate, Link } from "react-router-dom"
+import { useLocation, useNavigate, Link } from "react-router-dom"
 import React, { useState, useRef, useEffect, memo } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Users, PlusCircle, Paintbrush, Trophy, LogIn, LogOut, Award } from "lucide-react"
@@ -36,12 +36,17 @@ const FloatingParticles = memo(function FloatingParticles() {
 
 
 export default function RoomPage() {
+  // An invite link (/room/ABC123) or a failed join sends the player here with
+  // the room code and/or an error, so the form is pre-filled instead of blank.
+  const location = useLocation()
+  const redirect = (location.state ?? {}) as { roomCode?: string; error?: string }
   const [tab, setTab] = useState<"join" | "create">("join")
-  const [name, setName] = useState("")
-  const [roomCode, setRoomCode] = useState("")
-  const [error, setError] = useState("")
+  const [name, setName] = useState(() => localStorage.getItem("name") || "")
+  const [roomCode, setRoomCode] = useState(redirect.roomCode ?? "")
+  const [error, setError] = useState(redirect.error ?? "")
   const [rounds, setRounds] = useState(3)
   const [timePerRound, setTimePerRound] = useState(60)
+  const [maxPlayers, setMaxPlayers] = useState(8)
   const navigate = useNavigate()
   const { user, logout } = useAuth()
 
@@ -85,8 +90,13 @@ export default function RoomPage() {
       setError("Please enter a room code.")
       return
     }
+    const code = roomCode.trim().toUpperCase()
+    if (!/^[A-Z0-9]{4,8}$/.test(code)) {
+      setError("Room codes are 4–8 letters or numbers.")
+      return
+    }
     localStorage.setItem("name", name.trim())
-    triggerDoorOpen(`/room/${roomCode.trim()}`)
+    triggerDoorOpen(`/room/${code}`)
   }
 
   const handleCreate = (e: React.FormEvent) => {
@@ -98,22 +108,29 @@ export default function RoomPage() {
     const newRoomId = Math.random().toString(36).substring(2, 8).toUpperCase()
     localStorage.setItem("name", name.trim())
 
+    const clamp = (value: number, min: number, max: number, fallback: number) =>
+      Number.isFinite(value) ? Math.min(max, Math.max(min, Math.round(value))) : fallback
+
+    const onSuccess = ({ roomId }: { roomId: string }) => {
+      socket.off("createRoomError", onError)
+      socket.disconnect()
+      triggerDoorOpen(`/room/${roomId}`)
+    }
+    const onError = ({ message }: { message: string }) => {
+      socket.off("createRoomSuccess", onSuccess)
+      setError(message)
+      socket.disconnect()
+    }
+    socket.once("createRoomSuccess", onSuccess)
+    socket.once("createRoomError", onError)
+
     socket.connect()
     socket.emit("createRoom", {
       roomId: newRoomId,
       name: name.trim(),
-      rounds,
-      timePerRound,
-    })
-
-    socket.once("createRoomSuccess", ({ roomId }) => {
-      socket.disconnect()
-      triggerDoorOpen(`/room/${roomId}`)
-    })
-
-    socket.once("createRoomError", ({ message }) => {
-      setError(message)
-      socket.disconnect()
+      rounds: clamp(rounds, 1, 10, 3),
+      timePerRound: clamp(timePerRound, 10, 300, 60),
+      maxPlayers: clamp(maxPlayers, 2, 12, 8),
     })
   }
 
@@ -144,9 +161,8 @@ export default function RoomPage() {
   }
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-[#0d0d0d] text-[#ffedd2] p-4 overflow-hidden">
+    <div className="flex flex-col items-center justify-center min-h-screen bg-[#0d0d0d] text-[#ffedd2] p-4 pt-16 overflow-hidden">
       <FloatingParticles />
-      <link href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap" rel="stylesheet" />
 
       {/* Auth status bar */}
       <div className="fixed top-4 right-4 z-30 flex items-center gap-3 text-sm">
@@ -420,28 +436,42 @@ export default function RoomPage() {
                         maxLength={20}
                         variants={inputVariants}
                       />
-                      <motion.div variants={inputVariants} className="flex gap-4">
+                      <motion.div variants={inputVariants} className="grid grid-cols-3 gap-2 sm:gap-4">
                         <div className="flex-1">
-                          <label className="text-sm text-[#ffedd2]/70">Rounds</label>
+                          <label className="text-sm text-[#ffedd2]/70" htmlFor="room-rounds">Rounds</label>
                           <input
                             type="number"
                             min={1}
                             max={10}
-                            className="w-full bg-[#1a0f07] border border-[#5e3a22] rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-[#f4d03f] text-[#ffedd2]"
+                            className="w-full bg-[#1a0f07] border border-[#5e3a22] rounded-lg px-2 py-3 text-center focus:outline-none focus:ring-2 focus:ring-[#f4d03f] text-[#ffedd2]"
+                            id="room-rounds"
                             value={rounds}
                             onChange={(e) => setRounds(Number(e.target.value))}
                           />
                         </div>
                         <div className="flex-1">
-                          <label className="text-sm text-[#ffedd2]/70">Time (sec)</label>
+                          <label className="text-sm text-[#ffedd2]/70 whitespace-nowrap" htmlFor="room-time">Time (s)</label>
                           <input
                             type="number"
                             min={10}
                             max={300}
                             step={5}
-                            className="w-full bg-[#1a0f07] border border-[#5e3a22] rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-[#f4d03f] text-[#ffedd2]"
+                            className="w-full bg-[#1a0f07] border border-[#5e3a22] rounded-lg px-2 py-3 text-center focus:outline-none focus:ring-2 focus:ring-[#f4d03f] text-[#ffedd2]"
+                            id="room-time"
                             value={timePerRound}
                             onChange={(e) => setTimePerRound(Number(e.target.value))}
+                          />
+                        </div>
+                        <div className="flex-1">
+                          <label className="text-sm text-[#ffedd2]/70" htmlFor="room-players">Players</label>
+                          <input
+                            type="number"
+                            min={2}
+                            max={12}
+                            className="w-full bg-[#1a0f07] border border-[#5e3a22] rounded-lg px-2 py-3 text-center focus:outline-none focus:ring-2 focus:ring-[#f4d03f] text-[#ffedd2]"
+                            id="room-players"
+                            value={maxPlayers}
+                            onChange={(e) => setMaxPlayers(Number(e.target.value))}
                           />
                         </div>
                       </motion.div>

@@ -65,28 +65,33 @@ describe('chatMessageSchema', () => {
 });
 
 describe('drawingSchema', () => {
-  it('accepts a valid line segment', () => {
-    const result = validate(drawingSchema, {
-      roomId: 'ABC123',
-      prevPoint: { x: 1, y: 2 },
-      currentPoint: { x: 3, y: 4 },
-      color: '#000000',
-    });
-    expect(result).not.toBeNull();
+  const segment = {
+    roomId: 'ABC123',
+    strokeId: 's1',
+    from: { x: 0.1, y: 0.2 },
+    to: { x: 0.3, y: 0.4 },
+    color: '#1a2b3c',
+    size: 6,
+  };
+
+  it('accepts a valid normalised line segment', () => {
+    expect(validate(drawingSchema, segment)).not.toBeNull();
   });
 
-  it('accepts a null prevPoint (the first point of a new stroke)', () => {
-    const result = validate(drawingSchema, {
-      roomId: 'ABC123',
-      prevPoint: null,
-      currentPoint: { x: 3, y: 4 },
-      color: '#000000',
-    });
-    expect(result).not.toBeNull();
+  it('accepts a null `from` (the first point of a new stroke)', () => {
+    expect(validate(drawingSchema, { ...segment, from: null })).not.toBeNull();
   });
 
-  it('rejects a payload missing currentPoint', () => {
-    expect(validate(drawingSchema, { roomId: 'ABC123', color: '#000000' })).toBeNull();
+  it('rejects coordinates outside the 0..1 canvas range', () => {
+    expect(validate(drawingSchema, { ...segment, to: { x: 1.5, y: 0.2 } })).toBeNull();
+  });
+
+  it('rejects colours that are not #rrggbb hex', () => {
+    expect(validate(drawingSchema, { ...segment, color: 'url(javascript:alert(1))' })).toBeNull();
+  });
+
+  it('rejects brush sizes outside 1..60', () => {
+    expect(validate(drawingSchema, { ...segment, size: 500 })).toBeNull();
   });
 });
 

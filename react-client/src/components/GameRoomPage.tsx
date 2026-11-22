@@ -1,745 +1,453 @@
-"use client"
-import { useNavigate, useParams, Navigate } from "react-router-dom"
-import type React from "react"
-
-import { useState, useEffect, useRef, useMemo } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Navigate, useNavigate, useParams } from "react-router-dom"
+import { AnimatePresence, motion } from "framer-motion"
+import { LogOut, MessageCircle, Users, Volume2, VolumeX } from "lucide-react"
 import socket from "../socket"
-import DrawingCanvas, { type DrawLine } from "./DrawingCanvas"
-import { motion, AnimatePresence } from "framer-motion"
-import { LogOut, Send, Users, Clock, Edit, Trophy, Eraser, Crown, MessageCircle, X } from "lucide-react"
 import { useAuth } from "../contexts/useAuth"
+import type { ChatMessage, Player, Score, StrokeSegment, TurnSummary } from "../game/types"
+import { BRUSH_SIZES, PALETTE } from "../game/types"
+import { isMuted, play, setMuted } from "../game/sound"
+import DrawingCanvas from "./game/DrawingCanvas"
+import DrawingToolbar from "./game/DrawingToolbar"
+import { strokeColor, type Tool } from "../game/utils"
+import WordDisplay from "./game/WordDisplay"
+import TimerRing from "./game/TimerRing"
+import PlayerList from "./game/PlayerList"
+import ChatPanel from "./game/ChatPanel"
+import Confetti from "./game/Confetti"
+import { ToastViewport } from "./game/Toasts"
+import { useToasts } from "../game/useToasts"
+import { CountdownOverlay, GameOverOverlay, InviteCode, LobbyPanel, TurnSummaryOverlay } from "./game/Overlays"
 
-type Score = { name: string; score: number }
-type Player = { id: string; name: string }
-
-// Helper to generate a consistent color from a string (like a player's name)
-const stringToColor = (str: string) => {
-  let hash = 0
-  for (let i = 0; i < str.length; i++) {
-    hash = str.charCodeAt(i) + ((hash << 5) - hash)
-  }
-  let color = "#"
-  for (let i = 0; i < 3; i++) {
-    const value = (hash >> (i * 8)) & 0xff
-    color += ("00" + value.toString(16)).substr(-2)
-  }
-  return color
-}
-
-// New PlayerCard component for the sidebar
-const PlayerCard = ({
-  player,
-  points,
-  isHost,
-  isYou,
-  isDrawer,
-}: { player: Player; points: number; isHost: boolean; isYou: boolean; isDrawer: boolean }) => {
-  const avatarColor = useMemo(() => stringToColor(player.name), [player.name])
-  const initial = player.name.charAt(0).toUpperCase()
-
-  return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, y: 20, scale: 0.9 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, x: -20 }}
-      transition={{ duration: 0.3, ease: "easeOut" }}
-      className={`p-3 rounded-lg flex items-center gap-3 transition-all duration-300 border-2 ${isDrawer ? "bg-orange-400/20 border-orange-400" : "bg-[#282828] border-transparent"}`}
-    >
-      <div
-        className="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center font-bold text-white text-lg sm:text-xl"
-        style={{ backgroundColor: avatarColor }}
-      >
-        {initial}
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <p className="font-bold text-white truncate text-sm sm:text-base">{player.name}</p>
-          {isHost && (
-            <span title="Host">
-              <Crown className="w-3 h-3 sm:w-4 sm:h-4 text-yellow-400" />
-            </span>
-          )}
-          {isDrawer && (
-            <span title="Drawing">
-              <Edit className="w-3 h-3 sm:w-4 sm:h-4 text-orange-400" />
-            </span>
-          )}
-        </div>
-        <p className="text-xs sm:text-sm text-purple-400 font-semibold">{points} pts</p>
-      </div>
-      {isYou && <span className="text-xs font-bold text-green-400">YOU</span>}
-    </motion.div>
-  )
-}
+/** What the room is doing right now, from this client's point of view. */
+type Phase = "lobby" | "choosing" | "drawing" | "summary" | "over"
 
 export default function GameRoomPage() {
   const { roomId } = useParams()
   const navigate = useNavigate()
   const { user, loading: authLoading } = useAuth()
   const [guestName] = useState(() => localStorage.getItem("name") || "")
-  // A logged-in account's display name always takes priority over the guest
-  // name stashed in localStorage from the room-creation/join form.
+  // A logged-in account's display name always wins (the server enforces this too).
   const name = user?.displayName || guestName
-  const [joined, setJoined] = useState(false)
+
+  const { toasts, push: toast } = useToasts()
+  const [socketId, setSocketId] = useState("")
   const [players, setPlayers] = useState<Player[]>([])
-  const [hostName, setHostName] = useState<string>("")
-  const [gameStarted, setGameStarted] = useState(false)
-  const [chatMessages, setChatMessages] = useState<
-    { user: string; text: string; timestamp: number; correct?: boolean }[]
-  >([])
-  const [chatInput, setChatInput] = useState("")
-  const chatEndRef = useRef<HTMLDivElement>(null)
-  const [drawLines, setDrawLines] = useState<DrawLine[]>([])
-  const [currentRound, setCurrentRound] = useState(1)
+  const [hostName, setHostName] = useState("")
+  const [phase, setPhase] = useState<Phase>("lobby")
+  const [round, setRound] = useState(1)
   const [totalRounds, setTotalRounds] = useState(3)
   const [timePerRound, setTimePerRound] = useState(60)
+  const [timer, setTimer] = useState(0)
   const [drawerId, setDrawerId] = useState<string | null>(null)
-  const [timer, setTimer] = useState<number>(60)
-  const [socketId, setSocketId] = useState<string>("")
   const [wordOptions, setWordOptions] = useState<string[] | null>(null)
-  const [selectedWord, setSelectedWord] = useState<string | null>(null)
-  const [showWordOptions, setShowWordOptions] = useState(false)
-  const [displayWord, setDisplayWord] = useState<string>("")
-  const [roundCountdown, setRoundCountdown] = useState<number | null>(null)
-  const [points, setPoints] = useState<{ [name: string]: number }>({})
-  const [gameOverInfo, setGameOverInfo] = useState<{ scores: Score[]; reason?: string } | null>(null)
+  const [wordPattern, setWordPattern] = useState("")
+  const [segments, setSegments] = useState<StrokeSegment[]>([])
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [points, setPoints] = useState<Record<string, number>>({})
+  const [gains, setGains] = useState<Record<string, { points: number; key: number }>>({})
+  const [guessed, setGuessed] = useState<Set<string>>(new Set())
+  const [countdown, setCountdown] = useState<number | null>(null)
+  const [summary, setSummary] = useState<TurnSummary | null>(null)
+  const [gameOver, setGameOver] = useState<{ scores: Score[]; reason?: string } | null>(null)
+  const [confettiKey, setConfettiKey] = useState(0)
+  const [muted, setMutedState] = useState(isMuted)
+  const [mobileTab, setMobileTab] = useState<"chat" | "players">("chat")
 
-  // Mobile responsive states
-  const [showPlayers, setShowPlayers] = useState(false)
-  const [showChat, setShowChat] = useState(false)
-  const [canvasSize, setCanvasSize] = useState({ width: 700, height: 500 })
+  const [tool, setTool] = useState<Tool>("brush")
+  const [color, setColor] = useState<string>(PALETTE[0])
+  const [brushSize, setBrushSize] = useState<number>(BRUSH_SIZES[1])
 
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const timerRef = useRef<number | null>(null)
   const timePerRoundRef = useRef(timePerRound)
   timePerRoundRef.current = timePerRound
+  const pointsRef = useRef<Record<string, number>>({})
 
-  // Refs for dynamic layout calculation
-  const mainContentRef = useRef<HTMLElement>(null)
-  const gameInfoBarRef = useRef<HTMLDivElement>(null)
-  const wordAreaRef = useRef<HTMLDivElement>(null)
-  const canvasContainerRef = useRef<HTMLDivElement>(null)
+  const isDrawer = !!socketId && drawerId === socketId
+  const iGuessed = guessed.has(name)
+  const isHost = hostName === name
+  const drawerName = players.find((p) => p.id === drawerId)?.name
 
-  // Memoized sorted players list
-  const sortedPlayers = useMemo(() => {
-    return [...players].sort((a, b) => (points[b.name] || 0) - (points[a.name] || 0))
-  }, [players, points])
+  const stopTimer = () => {
+    if (timerRef.current) window.clearInterval(timerRef.current)
+    timerRef.current = null
+  }
 
-  // Handle canvas resize based on screen size
+  // ---- Socket wiring -------------------------------------------------------
   useEffect(() => {
-    const updateCanvasSize = () => {
-      const width = window.innerWidth
+    if (authLoading || !roomId || !name) return
 
-      if (width < 1024) {
-        // Keep existing mobile/tablet logic
-        if (width < 640) {
-          // mobile
-          setCanvasSize({ width: Math.min(width - 32, 350), height: 250 })
-        } else {
-          // tablet
-          setCanvasSize({ width: Math.min(width - 64, 500), height: 350 })
-        }
-      } else {
-        // New dynamic logic for desktop (lg+) to avoid scrolling
-        if (mainContentRef.current && gameInfoBarRef.current && wordAreaRef.current && canvasContainerRef.current) {
-          // Get total available height for the main column flex container
-          const mainContentHeight = mainContentRef.current.clientHeight
-
-          // Get heights of other elements in the column
-          const gameInfoHeight = gameInfoBarRef.current.offsetHeight
-          const wordAreaHeight = wordAreaRef.current.offsetHeight
-
-          // The main column has lg:gap-2 -> 0.5rem (8px). There are two gaps.
-          const totalGapsHeight = 16
-
-          // The canvas container fills the remaining space.
-          const canvasContainerHeight = mainContentHeight - gameInfoHeight - wordAreaHeight - totalGapsHeight
-
-          // The canvas container itself has lg:p-2 padding (8px top/bottom).
-          const canvasContainerPaddingY = 16
-          const finalCanvasHeight = canvasContainerHeight - canvasContainerPaddingY
-
-          // Calculate width based on the flex-item's actual rendered width
-          const mainContentWidth = mainContentRef.current.clientWidth
-
-          // Canvas container has lg:p-2 padding (8px left/right).
-          const canvasContainerPaddingX = 16
-          const finalCanvasWidth = mainContentWidth - canvasContainerPaddingX
-
-          setCanvasSize({
-            width: finalCanvasWidth,
-            height: finalCanvasHeight,
-          })
-        }
-      }
-    }
-
-    // Run once after initial layout and then on resize
-    // Using a timeout allows the refs to be populated and layout to be calculated
-    const timerId = setTimeout(updateCanvasSize, 100)
-    window.addEventListener("resize", updateCanvasSize)
-
-    return () => {
-      clearTimeout(timerId)
-      window.removeEventListener("resize", updateCanvasSize)
-    }
-  }, []) // Run only on mount
-
-  useEffect(() => {
-    if (authLoading) return // wait until we know whether the user is logged in
-    if (!roomId || !name) {
-      navigate("/room")
-      return
-    }
-
-    socket.connect()
-    socket.on("connect", () => {
-      setSocketId(socket.id || "")
-      socket.emit("joinRoom", { roomId, name })
-    })
-
-    socket.on("joinRoomSuccess", () => {
-      setJoined(true)
-      localStorage.setItem("roomId", roomId || "")
-    })
-
-    socket.on("joinError", (data: { message: string }) => {
-      alert(data.message)
-      socket.disconnect()
-      navigate("/room")
-    })
-
-    socket.on("playerList", (data) => {
-      setPlayers(data.players)
-      setHostName(data.hostName)
-    })
-
-    socket.on("gameStarted", (data) => {
-      setGameStarted(true)
-      setGameOverInfo(null)
-      setTotalRounds(data.rounds)
-      setTimePerRound(data.timePerRound)
-      setCurrentRound(1)
-      setPoints({})
-    })
-
-    socket.on("roundStartingSoon", ({ seconds }) => {
-      setRoundCountdown(seconds)
-      setDisplayWord("")
-    })
-
-    socket.on("drawingTurn", ({ drawerId, round }) => {
-      setDrawerId(drawerId)
-      setCurrentRound(round)
+    const startTimer = () => {
+      stopTimer()
       setTimer(timePerRoundRef.current)
-      setRoundCountdown(null)
-      setDrawLines([])
-
-      if (timerRef.current) clearInterval(timerRef.current)
-      timerRef.current = setInterval(() => {
-        setTimer((prev) => {
-          if (prev <= 1) {
-            clearInterval(timerRef.current!)
-            // NOTE: The client no longer tells the server when the turn ends.
-            // The server is now the authority on turn duration.
+      timerRef.current = window.setInterval(() => {
+        setTimer((t) => {
+          if (t <= 1) {
+            stopTimer()
             return 0
           }
-          return prev - 1
+          if (t <= 6) play("tick")
+          return t - 1
         })
       }, 1000)
-    })
-
-    socket.on("gameOver", (data: { scores: Score[]; reason?: string }) => {
-      setGameStarted(false)
-      setDrawerId(null)
-      if (timerRef.current) clearInterval(timerRef.current)
-      setTimer(0)
-      setGameOverInfo(data)
-    })
-
-    socket.on("chatHistory", (history) => setChatMessages(history))
-    socket.on("chatMessage", (msg) => setChatMessages((prev) => [...prev, msg]))
-
-    const handleDrawing = (line: DrawLine) => {
-      setDrawLines((prev) => [...prev, line])
     }
-    socket.on("drawing", handleDrawing)
 
-    socket.on("canvasCleared", () => {
-      setDrawLines([])
-    })
+    const handlers: Record<string, (...args: never[]) => void> = {
+      connect: () => {
+        setSocketId(socket.id || "")
+        socket.emit("joinRoom", { roomId, name })
+      },
+      joinError: (data: { message: string }) => {
+        socket.disconnect()
+        navigate("/room", { state: { roomCode: roomId, error: data.message } })
+      },
+      playerList: (data: { players: Player[]; hostName: string }) => {
+        setPlayers(data.players)
+        setHostName(data.hostName)
+      },
+      gameStarted: (data: { rounds: number; timePerRound: number }) => {
+        setTotalRounds(data.rounds)
+        setTimePerRound(data.timePerRound)
+        timePerRoundRef.current = data.timePerRound
+        setRound(1)
+        setGameOver(null)
+        setSummary(null)
+        setPoints({})
+        pointsRef.current = {}
+      },
+      roundStartingSoon: ({ seconds }: { seconds: number }) => {
+        setSummary(null)
+        setCountdown(seconds)
+      },
+      drawingTurn: ({ drawerId, round }: { drawerId: string; round: number }) => {
+        stopTimer()
+        setDrawerId(drawerId)
+        setRound(round)
+        setCountdown(null)
+        setSummary(null)
+        setSegments([])
+        setGuessed(new Set())
+        setWordPattern("")
+        setWordOptions(null)
+        setTimer(timePerRoundRef.current)
+        setPhase("choosing")
+        setTool("brush")
+      },
+      wordOptions: ({ options }: { options: string[] }) => setWordOptions(options),
+      roundStart: ({ word, isDrawer }: { word: string; isDrawer: boolean }) => {
+        setWordOptions(null)
+        // The drawer receives the plain word; give it the same "c a t" shape as the hint pattern.
+        setWordPattern(isDrawer ? word.split("").join(" ") : word)
+        setPhase("drawing")
+        startTimer()
+        play("turnStart")
+      },
+      hint: ({ word }: { word: string }) => setWordPattern(word),
+      turnEnded: (data: TurnSummary) => {
+        stopTimer()
+        setSummary(data)
+        setPhase("summary")
+      },
+      gameOver: (data: { scores: Score[]; reason?: string }) => {
+        stopTimer()
+        setTimer(0)
+        setDrawerId(null)
+        setCountdown(null)
+        setSummary(null)
+        setGameOver(data)
+        setPhase("over")
+        if (!data.reason) play("gameOver")
+      },
+      chatHistory: (history: ChatMessage[]) => setMessages(history),
+      chatMessage: (message: ChatMessage) => {
+        setMessages((prev) => [...prev.slice(-199), message])
+        if (message.correct) {
+          setGuessed((prev) => new Set(prev).add(message.user))
+          if (message.user === name) {
+            setConfettiKey((k) => k + 1)
+            play("correct")
+          } else {
+            play("otherCorrect")
+          }
+        }
+      },
+      closeGuess: ({ text }: { text: string }) => {
+        setMessages((prev) => [...prev, { user: name, text, timestamp: Date.now(), close: true }])
+        play("close")
+      },
+      chatError: (data: { message: string }) => toast(data.message, "error"),
+      startGameError: (data: { message: string }) => toast(data.message, "error"),
+      drawing: (segment: StrokeSegment) => setSegments((prev) => [...prev, segment]),
+      strokeUndone: ({ strokeId }: { strokeId: string }) =>
+        setSegments((prev) => prev.filter((segment) => segment.strokeId !== strokeId)),
+      canvasCleared: () => setSegments([]),
+      pointsUpdate: (next: Record<string, number>) => {
+        const previous = pointsRef.current
+        const now = Date.now()
+        const fresh: Record<string, { points: number; key: number }> = {}
+        for (const [player, score] of Object.entries(next)) {
+          const delta = score - (previous[player] || 0)
+          if (delta > 0) fresh[player] = { points: delta, key: now }
+        }
+        pointsRef.current = next
+        setPoints(next)
+        if (Object.keys(fresh).length) {
+          setGains((g) => ({ ...g, ...fresh }))
+          window.setTimeout(() => {
+            setGains((g) => {
+              const copy = { ...g }
+              for (const player of Object.keys(fresh)) if (copy[player]?.key === now) delete copy[player]
+              return copy
+            })
+          }, 1600)
+        }
+      },
+    }
 
-    socket.on("wordOptions", ({ options }) => {
-      setWordOptions(options)
-      setShowWordOptions(true)
-      setSelectedWord(null)
-      setDisplayWord("")
-    })
-
-    socket.on("roundStart", ({ word }) => {
-      setShowWordOptions(false)
-      setWordOptions(null)
-      setSelectedWord(null)
-      setDisplayWord(word)
-    })
-
-    socket.on("pointsUpdate", (pts) => setPoints(pts))
-
-    socket.on("startGameError", (data: { message: string }) => alert(data.message))
+    for (const [event, handler] of Object.entries(handlers)) socket.on(event, handler as (...args: unknown[]) => void)
+    socket.connect()
 
     return () => {
-      socket.off("connect")
-      socket.off("joinRoomSuccess")
-      socket.off("joinError")
-      socket.off("playerList")
-      socket.off("gameStarted")
-      socket.off("drawingTurn")
-      socket.off("gameOver")
-      socket.off("chatHistory")
-      socket.off("chatMessage")
-      socket.off("drawing", handleDrawing)
-      socket.off("canvasCleared")
-      socket.off("wordOptions")
-      socket.off("roundStart")
-      socket.off("roundStartingSoon")
-      socket.off("pointsUpdate")
-      socket.off("startGameError")
-
+      for (const [event, handler] of Object.entries(handlers)) socket.off(event, handler as (...args: unknown[]) => void)
       socket.disconnect()
-      if (timerRef.current) clearInterval(timerRef.current)
+      stopTimer()
     }
-  }, [roomId, name, authLoading, navigate])
+  }, [roomId, name, authLoading, navigate, toast])
 
+  // ---- Drawer actions ------------------------------------------------------
+  const canDraw = isDrawer && phase === "drawing"
+
+  const handleSegment = useCallback(
+    (segment: StrokeSegment) => {
+      const line = { ...segment, color: strokeColor(tool, color), size: tool === "eraser" ? Math.max(brushSize, 20) : brushSize }
+      socket.emit("drawing", { ...line, roomId })
+      setSegments((prev) => [...prev, line])
+    },
+    [tool, color, brushSize, roomId]
+  )
+
+  const undo = useCallback(() => {
+    if (canDraw) socket.emit("undoStroke", { roomId })
+  }, [canDraw, roomId])
+
+  const clear = () => {
+    if (canDraw) socket.emit("clearCanvas", { roomId })
+  }
+
+  // Keyboard shortcuts for the drawer: Ctrl/Cmd+Z, B, E, [ and ].
   useEffect(() => {
-    if (chatEndRef.current) {
-      chatEndRef.current.scrollIntoView({ behavior: "smooth" })
+    if (!canDraw) return
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement)?.tagName === "INPUT") return
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault()
+        undo()
+      } else if (e.key === "b") setTool("brush")
+      else if (e.key === "e") setTool("eraser")
+      else if (e.key === "[" || e.key === "]") {
+        setBrushSize((current) => {
+          const i = BRUSH_SIZES.indexOf(current as (typeof BRUSH_SIZES)[number])
+          const next = Math.min(BRUSH_SIZES.length - 1, Math.max(0, i + (e.key === "]" ? 1 : -1)))
+          return BRUSH_SIZES[next]
+        })
+      }
     }
-  }, [chatMessages])
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [canDraw, undo])
 
-  if (authLoading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-[#0d0d0d] text-[#ffedd2]">
-        Loading...
-      </div>
-    )
+  const chooseWord = (word: string) => {
+    socket.emit("chooseWord", { roomId, word })
+    setWordOptions(null)
   }
 
-  if (!roomId || !name) {
-    return <Navigate to="/room" replace />
-  }
-
-  const handleStartGame = () => {
-    socket.emit("startGame")
-  }
-
-  const handleLeaveRoom = () => {
+  const sendChat = (text: string) => socket.emit("chatMessage", { roomId, user: name, text })
+  const startGame = () => socket.emit("startGame")
+  const leave = () => {
     socket.disconnect()
     localStorage.removeItem("roomId")
     navigate("/room")
   }
-
-  const handleChatSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!chatInput.trim() || drawerId === socket.id) return
-    socket.emit("chatMessage", { roomId, user: name, text: chatInput.trim() })
-    setChatInput("")
+  const toggleMute = () => {
+    setMuted(!muted)
+    setMutedState(!muted)
   }
 
-  const handleDrawLine = (line: DrawLine) => {
-    socket.emit("drawing", { ...line, roomId })
-    setDrawLines((prev) => [...prev, line])
+  const chatPlaceholder = useMemo(() => {
+    if (isDrawer && (phase === "choosing" || phase === "drawing")) return "You're drawing, so chat is off"
+    if (iGuessed && phase === "drawing") return "Chat with players who guessed…"
+    if (phase === "drawing") return "Type your guess…"
+    return "Say something…"
+  }, [isDrawer, iGuessed, phase])
+
+  if (authLoading) {
+    return <div className="flex min-h-screen items-center justify-center bg-ink text-cream">Loading…</div>
+  }
+  if (!roomId || !name) {
+    // Invite link opened without a name yet: keep the code so the join form is pre-filled.
+    return <Navigate to="/room" replace state={{ roomCode: roomId }} />
   }
 
-  const handleWordSelect = (word: string) => {
-    if (!roomId || !wordOptions || selectedWord) return
-    setSelectedWord(word)
-    socket.emit("chooseWord", { roomId, word, round: currentRound })
-  }
-
-  const handleClearCanvas = () => {
-    if (isDrawer) {
-      socket.emit("clearCanvas", { roomId })
-    }
-  }
-
-  const isHost = hostName === name
-  const isDrawer = drawerId === socket.id
-  const drawerName = players.find((p) => p.id === drawerId)?.name || "..."
+  const chatDisabled = isDrawer && (phase === "choosing" || phase === "drawing")
+  const sidebarCard = "rounded-2xl border border-line bg-panel p-3"
 
   return (
-    <div className="flex flex-col h-screen bg-[#0d0d0d] text-[#ffedd2] overflow-hidden">
-      <link href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap" rel="stylesheet" />
+    <div className="flex h-[100dvh] flex-col overflow-hidden bg-ink text-cream">
+      <ToastViewport toasts={toasts} />
 
       {/* Header */}
-      <header className="flex items-center justify-between px-4 sm:px-8 py-3 lg:py-3 bg-[#1f1f1f] border-b border-[#3e3e3e] flex-shrink-0">
-        <div className="flex items-center gap-4">
-          <h1 className="text-lg sm:text-2xl lg:text-2xl font-bold truncate" style={{ fontFamily: "Kalam, cursive" }}>
-            Room: {roomId}
-          </h1>
-
-          {/* Mobile menu buttons */}
-          <div className="flex gap-2 lg:hidden">
-            <motion.button
-              onClick={() => setShowPlayers(!showPlayers)}
-              className="bg-[#282828] text-white p-2 rounded-lg flex items-center gap-1"
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-            >
-              <Users className="w-4 h-4" />
-              <span className="text-xs">{players.length}</span>
-            </motion.button>
-            <motion.button
-              onClick={() => setShowChat(!showChat)}
-              className="bg-[#282828] text-white p-2 rounded-lg flex items-center gap-1"
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-            >
-              <MessageCircle className="w-4 h-4" />
-            </motion.button>
-          </div>
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-line bg-panel px-3 py-2 sm:px-5">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="hidden font-display text-xl font-bold sm:inline">ScribbleVerse</span>
+          <InviteCode roomId={roomId} onCopied={(t) => toast(t, "success")} />
         </div>
-
-        <motion.button
-          onClick={handleLeaveRoom}
-          className="bg-red-500 text-white px-3 py-2 sm:px-4 lg:px-4 lg:py-2 rounded-lg flex items-center gap-2 text-sm sm:text-base lg:text-base"
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-        >
-          <LogOut className="w-4 h-4 sm:w-5 sm:h-5 lg:w-5 lg:h-5" />
-          <span className="hidden sm:inline">Leave Room</span>
-        </motion.button>
+        <div className="flex items-center gap-2 text-sm text-cream/70">
+          {phase !== "lobby" && phase !== "over" && (
+            <span className="whitespace-nowrap rounded-lg bg-panel-2 px-2.5 py-1 tabular-nums">
+              Round {round}/{totalRounds}
+            </span>
+          )}
+          <button type="button" onClick={toggleMute} className="rounded-lg p-2 hover:bg-panel-2" aria-label={muted ? "Unmute sounds" : "Mute sounds"}>
+            {muted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
+          </button>
+          <button type="button" onClick={leave} className="flex items-center gap-2 rounded-lg border border-danger/50 px-3 py-1.5 text-danger hover:bg-danger/10">
+            <LogOut className="h-4 w-4" />
+            <span className="hidden sm:inline">Leave</span>
+          </button>
+        </div>
       </header>
 
-      {/* Main content */}
-      <div className="flex flex-1 relative overflow-hidden">
-        {/* Players Sidebar - Desktop always visible, Mobile overlay */}
-        <aside
-          className={`
-          ${showPlayers ? "translate-x-0" : "-translate-x-full"} 
-          lg:translate-x-0 lg:relative lg:w-72
-          fixed inset-y-0 left-0 z-30 w-80 max-w-[90vw]
-          bg-[#1f1f1f] border-r border-[#3e3e3e] 
-          transition-transform duration-300 ease-in-out
-          flex flex-col
-        `}
-        >
-          <div className="p-4 lg:p-3 flex-1 overflow-hidden">
-            <div className="flex items-center justify-between mb-4 lg:mb-3">
-              <h3
-                className="text-lg sm:text-xl lg:text-lg font-bold flex items-center gap-2"
-                style={{ fontFamily: "Kalam, cursive" }}
-              >
-                <Users className="w-5 h-5 sm:w-6 sm:h-6 lg:w-5 lg:h-5" /> Players
-              </h3>
-              <button onClick={() => setShowPlayers(false)} className="lg:hidden p-1 hover:bg-[#282828] rounded">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto space-y-2 lg:space-y-1 pr-2">
-              <AnimatePresence>
-                {sortedPlayers.map((p) => (
-                  <PlayerCard
-                    key={p.id}
-                    player={p}
-                    points={points[p.name] || 0}
-                    isHost={p.name === hostName}
-                    isYou={p.id === socketId}
-                    isDrawer={p.id === drawerId}
-                  />
-                ))}
-              </AnimatePresence>
-            </div>
-          </div>
+      <div className="flex min-h-0 flex-1 flex-col gap-3 p-3 lg:grid lg:grid-cols-[16rem_minmax(0,1fr)_20rem]">
+        {/* Players (desktop) */}
+        <aside className={`${sidebarCard} hidden min-h-0 overflow-y-auto lg:block`}>
+          <h2 className="mb-3 flex items-center gap-2 font-display text-lg font-bold">
+            <Users className="h-5 w-5" /> Players <span className="text-sm text-cream/50">{players.length}</span>
+          </h2>
+          <PlayerList players={players} points={points} hostName={hostName} selfId={socketId} drawerId={drawerId} guessed={guessed} gains={gains} />
         </aside>
 
-        {/* Main Game Area */}
-        <main
-          ref={mainContentRef}
-          className="flex-1 flex flex-col p-4 sm:p-8 lg:p-3 gap-4 lg:gap-2 min-w-0 overflow-hidden"
-        >
-          {/* Game Info Bar */}
-          <div
-            ref={gameInfoBarRef}
-            className="flex flex-wrap justify-between items-center gap-2 text-sm sm:text-base lg:text-sm text-[#ffedd2]/80 bg-[#1f1f1f] rounded-lg p-3 lg:p-2 flex-shrink-0"
-          >
-            <div className="font-semibold">
-              Round: {currentRound} / {totalRounds}
+        {/* Stage */}
+        <main className={`relative flex min-h-0 flex-col gap-3 lg:flex-1 ${canDraw ? "flex-[5]" : "flex-[3]"}`}>
+          <div className="flex shrink-0 items-center gap-3 rounded-2xl border border-line bg-panel px-3 py-2">
+            {phase === "drawing" || phase === "choosing" ? (
+              <TimerRing seconds={phase === "drawing" ? timer : timePerRound} total={timePerRound} />
+            ) : (
+              <div className="h-14 w-14 shrink-0" aria-hidden />
+            )}
+            <div className="relative flex min-w-0 flex-1 justify-center">
+              {phase === "drawing" && wordPattern && <WordDisplay pattern={wordPattern} isDrawer={isDrawer} />}
+              {phase === "choosing" && !isDrawer && (
+                <p className="text-sm text-cream/70">
+                  <span className="font-semibold text-gold">{drawerName ?? "The drawer"}</span> is choosing a word…
+                </p>
+              )}
+              {phase === "choosing" && isDrawer && !wordOptions && <p className="text-sm text-cream/70">Starting your turn…</p>}
+              {phase === "lobby" && <p className="text-sm text-cream/60">Waiting for the game to start</p>}
+              {phase === "summary" && <p className="text-sm text-cream/60">Next turn coming up…</p>}
+              {phase === "over" && <p className="text-sm text-cream/60">Game finished</p>}
+              <AnimatePresence>{confettiKey > 0 && <Confetti key={confettiKey} />}</AnimatePresence>
             </div>
-            <div className="font-semibold flex items-center gap-1">
-              <Clock className="w-4 h-4" /> {timer}s
-            </div>
-            <div className="font-semibold flex items-center gap-1 truncate">
-              <Edit className="w-4 h-4" />
-              <span className="hidden sm:inline">Drawing:</span> {drawerName}
-            </div>
+            <div className="hidden w-14 sm:block" />
           </div>
 
-          {/* Canvas Area with Floating Eraser Button */}
-          <div
-        ref={canvasContainerRef}
-        className="flex-1 bg-[#0d0d0d] rounded-2xl border border-[#3e3e3e] flex flex-col items-center justify-center p-4 lg:p-2 min-h-0 relative overflow-hidden"
-      >
-        {/* Floating Eraser Button - Only visible on lg+ screens when user is drawer */}
-        {isDrawer && gameStarted && (
-          <motion.button
-            onClick={handleClearCanvas}
-            // This className controls the visibility and positioning
-            className="absolute top-4 right-4 z-10 bg-red-500 hover:bg-red-600 text-white p-3 rounded-full shadow-lg transition-colors hidden lg:flex items-center justify-center"
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            title="Clear Canvas"
-          >
-            <Eraser className="w-6 h-6" />
-          </motion.button>
-        )}
+          <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-line bg-panel-2/40 p-2">
+            <DrawingCanvas segments={segments} canDraw={canDraw} color={strokeColor(tool, color)} size={brushSize} onSegment={handleSegment} />
 
-        <DrawingCanvas
-          width={canvasSize.width}
-          height={canvasSize.height}
-          onDrawLine={handleDrawLine}
-          remoteLines={drawLines}
-          canDraw={isDrawer && gameStarted && !showWordOptions}
-        />
-        </div>
+            {/* Word choice for the drawer */}
+            <AnimatePresence>
+              {isDrawer && phase === "choosing" && wordOptions && (
+                <motion.div className="absolute inset-0 z-20 flex items-center justify-center overflow-y-auto bg-black/70 p-3" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                  <div className="text-center">
+                    <p className="font-display text-xl font-bold sm:text-2xl">Pick a word to draw</p>
+                    <p className="mt-0.5 text-xs text-cream/60 sm:text-sm">Auto-picks in 10 seconds</p>
+                    <div className="mt-3 flex flex-wrap justify-center gap-2 sm:mt-5 sm:gap-3">
+                      {wordOptions.map((word) => (
+                        <motion.button
+                          key={word}
+                          type="button"
+                          onClick={() => chooseWord(word)}
+                          whileHover={{ y: -3 }}
+                          className="rounded-xl border border-line bg-panel px-4 py-2 font-display text-lg font-bold capitalize hover:border-gold sm:px-5 sm:py-3 sm:text-xl"
+                        >
+                          {word}
+                        </motion.button>
+                      ))}
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
-          {/* Canvas Controls - Only show on mobile/tablet (below lg) */}
-          <div className="flex justify-center items-center h-12 lg:hidden">
-            {isDrawer && gameStarted && (
-              <motion.button
-                onClick={handleClearCanvas}
-                className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg flex items-center gap-2 transition-colors text-sm sm:text-base"
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-              >
-                <Eraser className="w-4 h-4 sm:w-5 sm:h-5" />
-                Clear Canvas
-              </motion.button>
-            )}
+            <AnimatePresence>{phase === "summary" && summary && <TurnSummaryOverlay summary={summary} />}</AnimatePresence>
+            <AnimatePresence>
+              {phase === "lobby" && (
+                <LobbyPanel
+                  roomId={roomId}
+                  players={players}
+                  isHost={isHost}
+                  hostName={hostName}
+                  onStart={startGame}
+                  onCopied={(t) => toast(t, "success")}
+                />
+              )}
+            </AnimatePresence>
           </div>
 
-          {/* Word Display Area */}
-          <div
-            ref={wordAreaRef}
-            className="h-20 sm:h-24 lg:h-24 flex flex-col items-center justify-center bg-[#1f1f1f] border border-[#3e3e3e] rounded-2xl p-4 lg:p-2 flex-shrink-0"
-          >
-            {isDrawer && showWordOptions && wordOptions && (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center w-full">
-                <div className="mb-2 lg:mb-2 font-semibold text-sm sm:text-base lg:text-base">
-                  Choose a word to draw (10s):
-                </div>
-                <div className="flex flex-wrap gap-2 sm:gap-4 lg:gap-2 justify-center">
-                  {wordOptions.map((word) => (
-                    <motion.button
-                      key={word}
-                      className={`px-3 py-2 sm:px-4 lg:px-4 lg:py-2 rounded-lg border font-bold transition text-sm sm:text-base lg:text-base ${selectedWord === word ? "bg-[#ffedd2] text-[#0d0d0d]" : "bg-[#282828] border-[#3e3e3e] hover:bg-[#ffedd2]/20"}`}
-                      onClick={() => handleWordSelect(word)}
-                      disabled={!!selectedWord}
-                      whileHover={{ y: -2 }}
-                    >
-                      {word}
-                    </motion.button>
-                  ))}
-                </div>
-              </motion.div>
-            )}
-            {displayWord && (
-              <span
-                className="text-xl sm:text-3xl lg:text-xl font-bold tracking-widest text-center"
-                style={{ fontFamily: "Kalam, cursive" }}
-              >
-                {isDrawer ? `Your word is: ${displayWord}` : displayWord}
-              </span>
-            )}
-            {!gameStarted && !gameOverInfo && (
-              <span className="text-lg sm:text-xl lg:text-base font-bold tracking-widest text-[#ffedd2]/70 text-center">
-                Waiting for host to start the game...
-              </span>
-            )}
-          </div>
+          {canDraw && (
+            <DrawingToolbar
+              tool={tool}
+              color={color}
+              size={brushSize}
+              canUndo={segments.length > 0}
+              onTool={setTool}
+              onColor={setColor}
+              onSize={setBrushSize}
+              onUndo={undo}
+              onClear={clear}
+            />
+          )}
         </main>
 
-        {/* Chat Sidebar - Desktop always visible, Mobile overlay */}
-        <aside
-          className={`
-          ${showChat ? "translate-x-0" : "translate-x-full"} 
-          lg:translate-x-0 lg:relative lg:w-80
-          fixed inset-y-0 right-0 z-30 w-80 max-w-[90vw]
-          bg-[#1f1f1f] border-l border-[#3e3e3e] 
-          transition-transform duration-300 ease-in-out
-          flex flex-col
-        `}
-        >
-          <div className="p-4 lg:p-3 flex-1 flex flex-col min-h-0">
-            <div className="flex items-center justify-between mb-4 lg:mb-3">
-              <h3 className="text-lg sm:text-xl lg:text-lg font-bold" style={{ fontFamily: "Kalam, cursive" }}>
-                Chat
-              </h3>
-              <button onClick={() => setShowChat(false)} className="lg:hidden p-1 hover:bg-[#282828] rounded">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto mb-2 pr-2 space-y-2 lg:space-y-1 min-h-0">
-              <AnimatePresence initial={false}>
-                {chatMessages.map((msg, idx) => (
-                  <motion.div
-                    key={idx}
-                    className={`text-sm lg:text-sm ${msg.correct ? "text-green-400 font-bold" : "text-[#ffedd2]/90"}`}
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <span className="font-semibold text-[#ffedd2]">{msg.user}:</span> {msg.text}
-                  </motion.div>
-                ))}
-              </AnimatePresence>
-              <div ref={chatEndRef} />
-            </div>
-
-            <form className="flex gap-2" onSubmit={handleChatSubmit}>
-              <input
-                className="flex-1 bg-[#0d0d0d] border border-[#3e3e3e] rounded-lg px-3 py-2 lg:px-3 lg:py-2 focus:outline-none focus:ring-2 focus:ring-[#ffedd2] text-[#ffedd2] disabled:opacity-50 text-sm lg:text-sm"
-                placeholder={isDrawer ? "You can't chat while drawing" : "Type your guess..."}
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                disabled={!joined || !gameStarted || isDrawer}
-                maxLength={200}
-              />
-              <motion.button
-                type="submit"
-                className="bg-gradient-to-r from-[#ffedd2] to-[#f4d03f] text-[#0d0d0d] px-3 py-2 sm:px-4 lg:px-3 lg:py-2 rounded-lg disabled:opacity-50"
-                disabled={!joined || !chatInput.trim() || !gameStarted || isDrawer}
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
+        {/* Chat (desktop) / tabbed chat + players (mobile) */}
+        <aside className={`${sidebarCard} flex min-h-0 flex-[2] flex-col lg:flex-1`}>
+          <div className="mb-2 flex gap-1 lg:hidden" role="tablist">
+            {(["chat", "players"] as const).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                role="tab"
+                aria-selected={mobileTab === tab}
+                onClick={() => setMobileTab(tab)}
+                className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg py-1.5 text-sm font-semibold ${mobileTab === tab ? "bg-panel-2 text-cream" : "text-cream/50"}`}
               >
-                <Send className="w-4 h-4 sm:w-5 sm:h-5 lg:w-5 lg:h-5" />
-              </motion.button>
-            </form>
+                {tab === "chat" ? <MessageCircle className="h-4 w-4" /> : <Users className="h-4 w-4" />}
+                {tab === "chat" ? "Chat" : `Players (${players.length})`}
+              </button>
+            ))}
+          </div>
+          <h2 className="mb-2 hidden items-center gap-2 font-display text-lg font-bold lg:flex">
+            <MessageCircle className="h-5 w-5" /> Chat
+          </h2>
+          <div className={`min-h-0 flex-1 overflow-y-auto lg:hidden ${mobileTab === "players" ? "block" : "hidden"}`}>
+            <PlayerList players={players} points={points} hostName={hostName} selfId={socketId} drawerId={drawerId} guessed={guessed} gains={gains} />
+          </div>
+          <div className={`min-h-0 flex-1 ${mobileTab === "chat" ? "flex" : "hidden"} flex-col lg:flex`}>
+            <ChatPanel messages={messages} disabled={chatDisabled} placeholder={chatPlaceholder} onSend={sendChat} />
           </div>
         </aside>
-
-        {/* Mobile overlay backdrop */}
-        {(showPlayers || showChat) && (
-          <div
-            className="fixed inset-0 bg-black/50 z-20 lg:hidden"
-            onClick={() => {
-              setShowPlayers(false)
-              setShowChat(false)
-            }}
-          />
-        )}
       </div>
 
-      {/* All your existing modals remain exactly the same */}
       <AnimatePresence>
-        {!gameStarted && isHost && !gameOverInfo && (
-          <motion.div
-            className="absolute inset-0 bg-black/60 flex items-center justify-center p-4"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
-            <motion.div
-              className="bg-[#1f1f1f] p-6 sm:p-8 rounded-2xl text-center border border-[#3e3e3e] w-full max-w-md"
-              initial={{ scale: 0.7 }}
-              animate={{ scale: 1 }}
-            >
-              <h2 className="text-2xl sm:text-3xl font-bold mb-4" style={{ fontFamily: "Kalam, cursive" }}>
-                Ready to Play?
-              </h2>
-              <p className="text-[#ffedd2]/70 mb-6">Waiting for players to join...</p>
-              <motion.button
-                onClick={handleStartGame}
-                disabled={players.length < 2}
-                className="mt-4 bg-gradient-to-r from-[#ffedd2] to-[#f4d03f] text-[#0d0d0d] font-bold py-3 px-6 sm:px-8 rounded-full hover:shadow-lg hover:shadow-[#ffedd2]/20 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                whileHover={{ scale: 1.1 }}
-                whileTap={{ scale: 0.9 }}
-              >
-                Start Game
-              </motion.button>
-              {players.length < 2 && <p className="text-sm text-red-400 mt-2">Need at least 2 players to start.</p>}
-            </motion.div>
-          </motion.div>
-        )}
-        {roundCountdown !== null && (
-          <motion.div
-            className="absolute inset-0 bg-black/60 flex items-center justify-center p-4"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
-            <div className="text-3xl sm:text-4xl font-bold text-orange-500 text-center p-6 sm:p-8 bg-[#1f1f1f] rounded-2xl border border-[#3e3e3e]">
-              Next round starts in {roundCountdown}...
-              <p className="text-lg sm:text-xl mt-4 text-[#ffedd2]">Get Ready!</p>
-            </div>
-          </motion.div>
-        )}
-        {gameOverInfo && (
-          <motion.div
-            className="absolute inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
-            <motion.div
-              className="bg-[#1f1f1f] p-6 sm:p-8 rounded-2xl text-center border border-[#3e3e3e] w-full max-w-md max-h-[90vh] overflow-y-auto"
-              initial={{ scale: 0.7, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              transition={{ delay: 0.2, duration: 0.4 }}
-            >
-              <h2
-                className="text-3xl sm:text-5xl font-bold mb-4 text-[#f4d03f]"
-                style={{ fontFamily: "Kalam, cursive" }}
-              >
-                Game Over!
-              </h2>
-
-              {gameOverInfo.reason ? (
-                <p className="text-lg sm:text-xl text-red-400 mt-6">{gameOverInfo.reason}</p>
-              ) : (
-                <>
-                  <div className="mb-6 mt-4">
-                    <Trophy className="w-16 h-16 sm:w-24 sm:h-24 text-yellow-400 mx-auto" />
-                    <p className="text-lg sm:text-xl mt-2">Winner</p>
-                    <p className="text-2xl sm:text-3xl font-bold text-white">
-                      {gameOverInfo.scores[0]?.name || "No one"}
-                    </p>
-                    <p className="text-base sm:text-lg text-yellow-400">{gameOverInfo.scores[0]?.score || 0} points</p>
-                  </div>
-                  <h3 className="text-xl sm:text-2xl font-bold mb-4" style={{ fontFamily: "Kalam, cursive" }}>
-                    Final Scores
-                  </h3>
-                  <ul className="space-y-2 text-left max-h-48 overflow-y-auto pr-2">
-                    {gameOverInfo.scores.map((player, index) => (
-                      <li
-                        key={player.name}
-                        className={`flex justify-between items-center p-3 rounded-lg ${index === 0 ? "bg-yellow-400/20 border border-yellow-400" : "bg-[#282828]"}`}
-                      >
-                        <span className="font-semibold text-base sm:text-lg flex items-center gap-2">
-                          {index === 0 && <Trophy className="w-4 h-4 sm:w-5 sm:h-5 text-yellow-400" />}
-                          {index === 1 && <Trophy className="w-4 h-4 sm:w-5 sm:h-5 text-gray-400" />}
-                          {index === 2 && <Trophy className="w-4 h-4 sm:w-5 sm:h-5 text-orange-400" />}
-                          {index > 2 && (
-                            <span className="w-4 sm:w-5 text-center text-sm sm:text-base">{index + 1}</span>
-                          )}
-                          <span className="truncate">{player.name}</span>
-                        </span>
-                        <span className="font-bold text-purple-400 text-sm sm:text-base">{player.score} points</span>
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              )}
-              <motion.button
-                onClick={handleLeaveRoom}
-                className="mt-6 sm:mt-8 bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 sm:px-8 rounded-full transition-colors"
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-              >
-                Leave Room
-              </motion.button>
-            </motion.div>
-          </motion.div>
+        {countdown !== null && phase !== "over" && <CountdownOverlay seconds={countdown} />}
+        {phase === "over" && gameOver && (
+          <GameOverOverlay
+            scores={gameOver.scores}
+            reason={gameOver.reason}
+            isHost={isHost}
+            canPlayAgain={players.length >= 2}
+            onPlayAgain={startGame}
+            onLeave={leave}
+          />
         )}
       </AnimatePresence>
     </div>

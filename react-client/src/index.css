@@ -1,5 +1,18 @@
 @import "tailwindcss";
 
+/* Design tokens: one palette for every page (bg-ink, text-cream, border-line...). */
+@theme {
+  --color-ink: #0d0d0d;
+  --color-panel: #1a1a1a;
+  --color-panel-2: #262626;
+  --color-line: #3a3a3a;
+  --color-cream: #ffedd2;
+  --color-gold: #f4d03f;
+  --color-success: #4ade80;
+  --color-danger: #f87171;
+  --font-display: "Kalam", cursive;
+}
+
 
 
 html {
@@ -30,8 +43,19 @@ body {
   background: #ffedd2;
 }
 
-    * {
-  transition: all 0.3s ease;
+/* Visible keyboard focus everywhere. */
+:focus-visible {
+  outline: 2px solid var(--color-gold);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 button {

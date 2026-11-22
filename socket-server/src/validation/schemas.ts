@@ -33,16 +33,25 @@ export const chatMessageSchema = z.object({
   text: z.string().trim().min(1).max(200),
 });
 
+// Coordinates are normalised to the canvas (0..1) so strokes render the same
+// on every screen size.
 const pointSchema = z.object({
-  x: z.number(),
-  y: z.number(),
+  x: z.number().min(0).max(1),
+  y: z.number().min(0).max(1),
 });
 
 export const drawingSchema = z.object({
   roomId: roomIdField,
-  prevPoint: pointSchema.nullable().optional(),
-  currentPoint: pointSchema,
-  color: z.string().min(1).max(20),
+  strokeId: z.string().min(1).max(32),
+  from: pointSchema.nullable(),
+  to: pointSchema,
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Color must be a #rrggbb hex value'),
+  // Brush width in pixels on a 1000px-wide reference canvas; clients scale it.
+  size: z.number().min(1).max(60),
+});
+
+export const undoStrokeSchema = z.object({
+  roomId: roomIdField,
 });
 
 export const chooseWordSchema = z.object({

@@ -435,4 +435,87 @@ describe('game flow (Socket.IO integration)', () => {
     dana.emit('startGame');
     await started;
   });
+
+  // ------------------------------------------------------------------
+  // v2 gameplay: strokes, undo, hints, close guesses, guessed-only chat
+  // ------------------------------------------------------------------
+
+  /** Starts a 3-player game and has the drawer pick a word; resolves when guessing is open. */
+  async function liveTurn(settings: Record<string, number> = { rounds: 1, timePerRound: 30 }) {
+    const { roomId, players } = await setupRoom(['Alice', 'Bob', 'Cara'], settings);
+    const { drawer, options, others } = await startAndGetDrawer(players);
+    const word = options[0];
+    const live = Promise.all(others.map((p) => waitForEvent(p.socket, 'roundStart')));
+    drawer.socket.emit('chooseWord', { roomId, word });
+    await live;
+    return { roomId, drawer, others, word };
+  }
+
+  it('relays normalised stroke segments and lets the drawer undo the last stroke', async () => {
+    const { roomId, drawer, others } = await liveTurn();
+    const received = collect<{ strokeId: string }>(others[0].socket, 'drawing');
+
+    const segment = (strokeId: string, x: number) => ({
+      roomId, strokeId, from: null, to: { x, y: 0.5 }, color: '#ff0000', size: 8,
+    });
+    drawer.socket.emit('drawing', segment('s1', 0.1));
+    drawer.socket.emit('drawing', segment('s2', 0.2));
+    await vi.waitFor(() => expect(received).toHaveLength(2));
+    expect(received[1]).toEqual({ strokeId: 's2', from: null, to: { x: 0.2, y: 0.5 }, color: '#ff0000', size: 8 });
+
+    // A guesser can't undo; the drawer's undo removes only the latest stroke.
+    const undone = waitForEvent<{ strokeId: string }>(others[0].socket, 'strokeUndone');
+    others[1].socket.emit('undoStroke', { roomId });
+    drawer.socket.emit('undoStroke', { roomId });
+    expect(await undone).toEqual({ strokeId: 's2' });
+  });
+
+  it('privately tells a guesser they are close without broadcasting the near-miss', async () => {
+    const { roomId, others, word } = await liveTurn();
+    const [guesser, bystander] = others;
+    const nearMiss = word.slice(0, -1) + (word.endsWith('z') ? 'y' : 'z');
+
+    const seenByBystander = collect<{ text: string }>(bystander.socket, 'chatMessage');
+    const close = waitForEvent<{ text: string }>(guesser.socket, 'closeGuess');
+    guesser.socket.emit('chatMessage', { roomId, user: guesser.name, text: nearMiss });
+
+    expect((await close).text).toBe(nearMiss);
+    await sleep(200);
+    expect(seenByBystander.map((m) => m.text)).not.toContain(nearMiss);
+  });
+
+  it('keeps chat from players who guessed among them and the drawer, then reports turn gains', async () => {
+    const { roomId, drawer, others, word } = await liveTurn();
+    const [first, second] = others;
+
+    const firstCorrect = waitForEvent(second.socket, 'chatMessage');
+    first.socket.emit('chatMessage', { roomId, user: first.name, text: word });
+    await firstCorrect; // "<first> guessed the word!"
+
+    const toDrawer = waitForEvent<{ text: string; guessed?: boolean }>(drawer.socket, 'chatMessage');
+    const seenBySecond = collect<{ text: string }>(second.socket, 'chatMessage');
+    first.socket.emit('chatMessage', { roomId, user: first.name, text: 'that was easy' });
+    expect(await toDrawer).toMatchObject({ text: 'that was easy', guessed: true });
+    await sleep(200);
+    expect(seenBySecond.map((m) => m.text)).not.toContain('that was easy');
+
+    const ended = waitForEvent<{ word: string; gains: { name: string; points: number }[] }>(drawer.socket, 'turnEnded');
+    second.socket.emit('chatMessage', { roomId, user: second.name, text: word });
+    const summary = await ended;
+    expect(summary.word).toBe(word);
+    expect(summary.gains.map((g) => g.name).sort()).toEqual([drawer.name, first.name, second.name].sort());
+    expect(summary.gains.find((g) => g.name === drawer.name)?.points).toBe(100);
+  });
+
+  it('reveals letters to guessers (not the drawer) as the turn runs down', async () => {
+    const { drawer, others, word } = await liveTurn({ rounds: 1, timePerRound: 10 });
+    const drawerHints = collect(drawer.socket, 'hint');
+    const hint = await waitForEvent<{ word: string }>(others[0].socket, 'hint');
+
+    const letters = hint.word.split(' ').filter((c) => c !== '');
+    expect(letters).toHaveLength(word.replace(/\s/g, '').length);
+    expect(letters.filter((c) => c !== '_').length).toBeGreaterThanOrEqual(1);
+    expect(letters.some((c) => c === '_')).toBe(true);
+    expect(drawerHints).toEqual([]);
+  }, 15000);
 });

@@ -15,7 +15,16 @@ import {
   drawingSchema,
   chooseWordSchema,
   clearCanvasSchema,
+  undoStrokeSchema,
 } from './validation/schemas';
+import {
+  buildHint,
+  hintCountFor,
+  hintScheduleMs,
+  isCloseGuess,
+  isCorrectGuess,
+  pickHintIndex,
+} from './game/wordHelpers';
 import { createRateLimiters, isAllowed } from './rateLimiters';
 import { verifyToken, AUTH_COOKIE_NAME } from './auth/jwt';
 import { User } from './model/user';
@@ -84,7 +93,20 @@ export type GameState = {
   roundTimer?: NodeJS.Timeout; // Authoritative server-side timer for each turn
   intermissionTimer?: NodeJS.Timeout; // Delay/countdown between turns and rounds
   gameId?: string;
+  turnGains: { [playerName: string]: number }; // Points earned in the current turn
 };
+
+/** One line segment of a stroke, in normalised (0..1) canvas coordinates. */
+export type StrokeSegment = {
+  strokeId: string;
+  from: { x: number; y: number } | null;
+  to: { x: number; y: number };
+  color: string;
+  size: number;
+};
+
+/** Upper bound on stored segments per turn, so a single drawing can't exhaust memory. */
+const MAX_SEGMENTS_PER_TURN = 20_000;
 
 /** How long an unjoined room keeps its in-memory state before being reclaimed. */
 const EMPTY_ROOM_GRACE_MS = 5 * 60 * 1000;
@@ -206,8 +228,13 @@ export function createApp() {
       currentWord: string | null;
       wordOptions: string[];
       wordSelectionTimeout?: NodeJS.Timeout;
+      revealed: Set<number>; // letter indexes already given away as hints
+      hintTimers: NodeJS.Timeout[];
     }
   } = {};
+  // Stroke history for the current turn: lets the drawer undo, and is the
+  // foundation for replaying the canvas to clients that (re)join later.
+  const strokes: { [roomId: string]: StrokeSegment[] } = {};
 
   function newGameState(settings: RoomSettings): GameState {
     return {
@@ -217,6 +244,7 @@ export function createApp() {
       gameStarted: false,
       phase: 'idle',
       turnId: 0,
+      turnGains: {},
     };
   }
 
@@ -233,7 +261,11 @@ export function createApp() {
     }
     const words = wordState[roomId];
     if (words?.wordSelectionTimeout) clearTimeout(words.wordSelectionTimeout);
-    if (words) words.wordSelectionTimeout = undefined;
+    if (words) {
+      words.wordSelectionTimeout = undefined;
+      words.hintTimers.forEach(clearTimeout);
+      words.hintTimers = [];
+    }
   }
 
   /** Frees every piece of in-memory state (and pending timer) belonging to a room. */
@@ -247,6 +279,7 @@ export function createApp() {
     delete playerPoints[roomId];
     delete correctGuessers[roomId];
     delete wordState[roomId];
+    delete strokes[roomId];
   }
 
   /** Reclaims a room's memory if nobody has joined it within the grace period. */
@@ -362,7 +395,9 @@ export function createApp() {
     clearTurnTimers(roomId);
 
     const options = getRandomWords();
-    wordState[roomId] = { currentWord: null, wordOptions: options };
+    wordState[roomId] = { currentWord: null, wordOptions: options, revealed: new Set(), hintTimers: [] };
+    strokes[roomId] = [];
+    state.turnGains = {};
     state.turnId += 1;
     state.phase = 'choosing';
     state.roundStartTime = Date.now();
@@ -401,6 +436,17 @@ export function createApp() {
       if (state.turnId !== turnId) return;
       endTurnAndProceed(roomId);
     }, state.timePerRound * 1000);
+
+    // Progressive hints: reveal a few letters to guessers as time runs down.
+    words.hintTimers = hintScheduleMs(state.timePerRound, hintCountFor(word)).map((delay) =>
+      setTimeout(() => {
+        if (state.turnId !== turnId || state.phase !== 'drawing' || words.currentWord !== word) return;
+        const index = pickHintIndex(word, words.revealed);
+        if (index === null) return;
+        words.revealed.add(index);
+        io.to(roomId).except(drawerId).emit('hint', { word: buildHint(word, words.revealed) });
+      }, delay)
+    );
 
     const placeholder = getPlaceholder(word);
     const players = rooms[roomId] || [];
@@ -441,6 +487,14 @@ export function createApp() {
     if (word) {
       io.to(roomId).emit('chatMessage', { user: 'System', text: `The word was: ${word}`, timestamp: Date.now() });
     }
+    if (drawerName && drawerPoints > 0) state.turnGains[drawerName] = drawerPoints;
+    io.to(roomId).emit('turnEnded', {
+      word,
+      drawerName: drawerName ?? null,
+      gains: Object.entries(state.turnGains)
+        .map(([name, points]) => ({ name, points }))
+        .sort((a, b) => b.points - a.points),
+    });
 
     // Move to the next person in the queue.
     if (state.drawingOrder[0] === drawerId) state.drawingOrder.shift();
@@ -633,17 +687,36 @@ export function createApp() {
 
       const currentWord = wordState[roomId]?.currentWord;
       const isGuessOpen = !!state?.gameStarted && state.phase === 'drawing' && !!currentWord;
-      if (isGuessOpen && text.trim().toLowerCase() === currentWord!.trim().toLowerCase()) {
+      const alreadyGuessed = isGuessOpen && !!correctGuessers[roomId]?.has(user);
+
+      if (alreadyGuessed) {
+        // Players who know the word may only talk to each other and the drawer,
+        // so they can't leak it. Never echo the word itself, even here.
+        if (isCorrectGuess(text, currentWord!)) return;
+        const drawerId = state.drawingOrder[0];
+        const audience = (rooms[roomId] || []).filter(
+          (p) => p.id === drawerId || correctGuessers[roomId].has(p.name)
+        );
+        const message = { user, text, timestamp: Date.now(), correct: false, guessed: true };
+        audience.forEach((p) => io.to(p.id).emit('chatMessage', message));
+        return;
+      }
+
+      if (isGuessOpen && !isCorrectGuess(text, currentWord!) && isCloseGuess(text, currentWord!)) {
+        // Tell only the guesser; broadcasting a near-miss would hand others the answer.
+        socket.emit('closeGuess', { text });
+        return;
+      }
+
+      if (isGuessOpen && isCorrectGuess(text, currentWord!)) {
         if (!correctGuessers[roomId]) correctGuessers[roomId] = new Set();
-        if (correctGuessers[roomId].has(user)) {
-          return;
-        }
         correctGuessers[roomId].add(user);
 
         const elapsed = state.roundStartTime ? Math.floor((Date.now() - state.roundStartTime) / 1000) : 0;
         const points = calculateGuessPoints(state.timePerRound, elapsed);
 
         playerPoints[roomId][user] = (playerPoints[roomId][user] || 0) + points;
+        state.turnGains[user] = points;
 
         const message = { user, text: `${user} guessed the word!`, timestamp: Date.now(), correct: true };
         io.to(roomId).emit('chatMessage', message);
@@ -674,7 +747,23 @@ export function createApp() {
       const state = gameState[roomId];
       if (!state || !state.gameStarted || state.phase !== 'drawing' || socket.id !== state.drawingOrder[0]) return;
       if (!(await isAllowed(drawingLimiter, socket.id))) return;
+      const history = (strokes[roomId] ??= []);
+      if (history.length >= MAX_SEGMENTS_PER_TURN) return;
+      history.push(line);
       socket.to(roomId).emit('drawing', line);
+    });
+
+    socket.on('undoStroke', (payload) => {
+      const data = validate(undoStrokeSchema, payload);
+      if (!data || data.roomId !== currentRoom) return;
+      const state = gameState[data.roomId];
+      if (!state || !state.gameStarted || state.phase !== 'drawing' || socket.id !== state.drawingOrder[0]) return;
+
+      const history = strokes[data.roomId];
+      const last = history?.[history.length - 1];
+      if (!last) return;
+      strokes[data.roomId] = history.filter((segment) => segment.strokeId !== last.strokeId);
+      io.to(data.roomId).emit('strokeUndone', { strokeId: last.strokeId });
     });
 
     socket.on('clearCanvas', (payload) => {
@@ -684,6 +773,7 @@ export function createApp() {
       if (roomId !== currentRoom) return;
       const state = gameState[roomId];
       if (state && state.gameStarted && state.phase === 'drawing' && socket.id === state.drawingOrder[0]) {
+          strokes[roomId] = [];
           io.to(roomId).emit('canvasCleared');
       }
     });
