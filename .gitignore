@@ -1,0 +1,15 @@
+# Local docs and notes: kept on disk, not part of the project code
+CLAUDE.md
+docs/BUGS.md
+docs/V2_ROADMAP.md
+docs/superpowers/
+docs/screenshots/
+CONTEXT.md
+INTERVIEW_PREP.md
+flows.md
+scribbleverse_guide.html
+
+# Tooling and OS files
+.claude/
+.superpowers/
+.DS_Store

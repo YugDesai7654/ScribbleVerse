@@ -4,19 +4,6 @@ ScribbleVerse is a real-time multiplayer drawing and guessing game built with Re
 
 The project supports both guest play and persistent accounts. Logged-in players get a profile page with their stats and game history, and appear on all-time, weekly and daily leaderboards.
 
-## Screenshots
-
-| | |
-| --- | --- |
-| ![Home page with an animated example round](docs/screenshots/home-dark.png) | ![Home page in the light theme](docs/screenshots/home-light.png) |
-| **Home:** a looping replay of a real round | **Light theme** |
-| ![Guessing while another player draws](docs/screenshots/game-guessing.png) | ![Drawing with the fill bucket](docs/screenshots/game-drawer-fill.png) |
-| **Guessing**, with a private "close" nudge | **Drawing**, with the fill bucket and toolbar |
-| ![Game over with the drawing gallery](docs/screenshots/game-over-gallery.png) | ![Player profile with stats and history](docs/screenshots/profile.png) |
-| **Game over:** podium and gallery, each drawing downloadable as a PNG | **Profile:** stats and full game history |
-| ![Weekly leaderboard](docs/screenshots/leaderboard.png) | |
-| **Leaderboard:** all time, this week or today | |
-
 ## Highlights
 
 ### Gameplay (v2)
