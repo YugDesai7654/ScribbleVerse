@@ -5,8 +5,13 @@ import {
   joinRoomSchema,
   chatMessageSchema,
   drawingSchema,
+  drawingBatchSchema,
   chooseWordSchema,
+  updateSettingsSchema,
+  kickPlayerSchema,
+  startGameSchema,
 } from '../validation/schemas';
+import { CATEGORIES } from '../game/words';
 
 describe('createRoomSchema', () => {
   it('accepts a minimal valid payload and fills in defaults', () => {
@@ -47,6 +52,14 @@ describe('joinRoomSchema', () => {
   it('rejects an empty name', () => {
     expect(validate(joinRoomSchema, { roomId: 'ABC123', name: '' })).toBeNull();
   });
+
+  it('accepts a host token of 1 to 64 characters and rejects others', () => {
+    const base = { roomId: 'ABC123', name: 'Bob' };
+    expect(validate(joinRoomSchema, { ...base, hostToken: 'x' })).not.toBeNull();
+    expect(validate(joinRoomSchema, { ...base, hostToken: 'x'.repeat(64) })).not.toBeNull();
+    expect(validate(joinRoomSchema, { ...base, hostToken: '' })).toBeNull();
+    expect(validate(joinRoomSchema, { ...base, hostToken: 'x'.repeat(65) })).toBeNull();
+  });
 });
 
 describe('chatMessageSchema', () => {
@@ -65,28 +78,33 @@ describe('chatMessageSchema', () => {
 });
 
 describe('drawingSchema', () => {
-  it('accepts a valid line segment', () => {
-    const result = validate(drawingSchema, {
-      roomId: 'ABC123',
-      prevPoint: { x: 1, y: 2 },
-      currentPoint: { x: 3, y: 4 },
-      color: '#000000',
-    });
-    expect(result).not.toBeNull();
+  const segment = {
+    roomId: 'ABC123',
+    strokeId: 's1',
+    from: { x: 0.1, y: 0.2 },
+    to: { x: 0.3, y: 0.4 },
+    color: '#1a2b3c',
+    size: 6,
+  };
+
+  it('accepts a valid normalised line segment', () => {
+    expect(validate(drawingSchema, segment)).not.toBeNull();
   });
 
-  it('accepts a null prevPoint (the first point of a new stroke)', () => {
-    const result = validate(drawingSchema, {
-      roomId: 'ABC123',
-      prevPoint: null,
-      currentPoint: { x: 3, y: 4 },
-      color: '#000000',
-    });
-    expect(result).not.toBeNull();
+  it('accepts a null `from` (the first point of a new stroke)', () => {
+    expect(validate(drawingSchema, { ...segment, from: null })).not.toBeNull();
   });
 
-  it('rejects a payload missing currentPoint', () => {
-    expect(validate(drawingSchema, { roomId: 'ABC123', color: '#000000' })).toBeNull();
+  it('rejects coordinates outside the 0..1 canvas range', () => {
+    expect(validate(drawingSchema, { ...segment, to: { x: 1.5, y: 0.2 } })).toBeNull();
+  });
+
+  it('rejects colours that are not #rrggbb hex', () => {
+    expect(validate(drawingSchema, { ...segment, color: 'url(javascript:alert(1))' })).toBeNull();
+  });
+
+  it('rejects brush sizes outside 1..60', () => {
+    expect(validate(drawingSchema, { ...segment, size: 500 })).toBeNull();
   });
 });
 
@@ -97,5 +115,89 @@ describe('chooseWordSchema', () => {
 
   it('rejects a non-positive round number', () => {
     expect(validate(chooseWordSchema, { roomId: 'ABC123', word: 'cat', round: 0 })).toBeNull();
+  });
+});
+
+describe('updateSettingsSchema', () => {
+  const base = { roomId: 'ABC123' };
+
+  it('accepts a partial update of a single setting', () => {
+    expect(validate(updateSettingsSchema, { ...base, rounds: 4 })).toEqual({ ...base, rounds: 4 });
+  });
+
+  it('accepts every category and rejects unknown ones', () => {
+    for (const category of CATEGORIES) {
+      expect(validate(updateSettingsSchema, { ...base, category })).toEqual({ ...base, category });
+    }
+    expect(validate(updateSettingsSchema, { ...base, category: 'dinosaurs' })).toBeNull();
+  });
+
+  it('splits, trims, lowercases and de-duplicates custom words', () => {
+    expect(validate(updateSettingsSchema, { ...base, customWords: ' Rocket  Ship, comet,,rocket ship ' })).toEqual({
+      ...base,
+      customWords: ['rocket ship', 'comet'],
+    });
+  });
+
+  it('treats an empty textarea as no custom words', () => {
+    expect(validate(updateSettingsSchema, { ...base, customWords: '' })).toEqual({ ...base, customWords: [] });
+  });
+
+  it('rejects custom words outside 2–30 characters or with symbols', () => {
+    expect(validate(updateSettingsSchema, { ...base, customWords: 'ok, x' })).toBeNull();
+    expect(validate(updateSettingsSchema, { ...base, customWords: 'a'.repeat(31) })).toBeNull();
+    expect(validate(updateSettingsSchema, { ...base, customWords: 'hello<script>' })).toBeNull();
+  });
+
+  it('rejects more than 200 custom words', () => {
+    const words = (n: number) =>
+      Array.from({ length: n }, (_, i) => `w${i.toString(26).replace(/\d/g, (d) => 'qrstuvwxyz'[Number(d)])}`).join(',');
+    expect(validate(updateSettingsSchema, { ...base, customWords: words(200) })).not.toBeNull();
+    expect(validate(updateSettingsSchema, { ...base, customWords: words(201) })).toBeNull();
+  });
+
+  it('rejects out-of-range numeric settings', () => {
+    expect(validate(updateSettingsSchema, { ...base, rounds: 0 })).toBeNull();
+    expect(validate(updateSettingsSchema, { ...base, timePerRound: 500 })).toBeNull();
+    expect(validate(updateSettingsSchema, { ...base, maxPlayers: 1 })).toBeNull();
+  });
+});
+
+describe('kickPlayerSchema and reconnect token', () => {
+  it('requires a target player ID', () => {
+    expect(validate(kickPlayerSchema, { roomId: 'ABC123', playerId: 'abc' })).not.toBeNull();
+    expect(validate(kickPlayerSchema, { roomId: 'ABC123' })).toBeNull();
+  });
+
+  it('accepts an optional reconnect token on join', () => {
+    expect(validate(joinRoomSchema, { roomId: 'ABC123', name: 'Al', reconnectToken: 'tok' })).toMatchObject({ reconnectToken: 'tok' });
+    expect(validate(joinRoomSchema, { roomId: 'ABC123', name: 'Al', reconnectToken: 'x'.repeat(65) })).toBeNull();
+  });
+});
+
+describe('startGameSchema', () => {
+  it('accepts no payload or an empty object', () => {
+    expect(validate(startGameSchema, undefined)).toBeUndefined();
+    expect(validate(startGameSchema, {})).toEqual({});
+  });
+  it('rejects unknown keys such as a client-supplied room', () => {
+    expect(validate(startGameSchema, { roomId: 'X' })).toBeNull();
+  });
+});
+
+describe('drawingBatchSchema', () => {
+  const seg = { strokeId: 's1', from: null, to: { x: 0.3, y: 0.4 }, color: '#1a2b3c', size: 6 };
+  const batch = (n: number) => ({ roomId: 'ABC123', segments: Array.from({ length: n }, () => seg) });
+
+  it('rejects an empty batch', () => {
+    expect(validate(drawingBatchSchema, batch(0))).toBeNull();
+  });
+
+  it('rejects more than 16 segments', () => {
+    expect(validate(drawingBatchSchema, batch(17))).toBeNull();
+  });
+
+  it('accepts 16 segments', () => {
+    expect(validate(drawingBatchSchema, batch(16))).not.toBeNull();
   });
 });

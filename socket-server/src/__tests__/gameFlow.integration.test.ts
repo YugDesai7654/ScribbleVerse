@@ -2,11 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Socket as ClientSocket } from 'socket.io-client';
 import { startTestServer, connectClient, waitForEvent } from './testUtils';
 import { signToken } from '../auth/jwt';
-import { joinRoom as joinRoomRecord } from '../api/room';
+import { createRoom as createRoomRecord, joinRoom as joinRoomRecord, touchRoom } from '../api/room';
 import { io as ioClient } from 'socket.io-client';
 
 const updateUserStats = vi.hoisted(() => vi.fn(async () => ({ id: 'authenticated-user' })));
 const createGameResult = vi.hoisted(() => vi.fn(async () => ({ id: 'game-result' })));
+/** Current account display names by user id, as the database would hold them. */
+const accountNames = vi.hoisted(() => new Map<string, string>());
 
 // Mock the MongoDB-backed room repository so these tests never need a real
 // database — they exercise the actual Socket.IO handlers in `server.ts`
@@ -14,6 +16,9 @@ const createGameResult = vi.hoisted(() => vi.fn(async () => ({ id: 'game-result'
 vi.mock('../model/user', () => ({
   User: {
     findByIdAndUpdate: updateUserStats,
+    findById: (id: string) => ({
+      select: async () => (accountNames.has(id) ? { displayName: accountNames.get(id) } : null),
+    }),
   },
 }));
 
@@ -37,10 +42,17 @@ vi.mock('../api/room', () => {
       if (!room) throw new Error('Room does not exist');
       return room;
     }),
+    touchRoom: vi.fn(async () => undefined),
     updateHost: vi.fn(async (roomId: string, newHostName: string) => {
       const room = store.get(roomId);
       if (!room) return null;
       room.hostName = newHostName;
+      return room;
+    }),
+    updateRoomSettings: vi.fn(async (roomId: string, settings: Record<string, unknown>) => {
+      const room = store.get(roomId);
+      if (!room) return null;
+      Object.assign(room, settings);
       return room;
     }),
   };
@@ -54,6 +66,9 @@ function uniqueRoomId(): string {
 
 type TestServer = Awaited<ReturnType<typeof startTestServer>>;
 
+/** Short reconnect grace period so seat-release tests run quickly. */
+const GRACE_MS = 1500;
+
 describe('game flow (Socket.IO integration)', () => {
   let testServer: TestServer;
   const clients: ClientSocket[] = [];
@@ -61,7 +76,8 @@ describe('game flow (Socket.IO integration)', () => {
   beforeEach(async () => {
     updateUserStats.mockClear();
     createGameResult.mockClear();
-    testServer = await startTestServer();
+    accountNames.clear();
+    testServer = await startTestServer({ reconnectGraceMs: GRACE_MS });
   });
 
   afterEach(async () => {
@@ -248,17 +264,18 @@ describe('game flow (Socket.IO integration)', () => {
     for (const _ of names) sockets.push(await join(testServer.url));
     sockets[0].emit('createRoom', { roomId, name: names[0], ...settings });
     await waitForEvent(sockets[0], 'createRoomSuccess');
+    const tokens: string[] = [];
     for (let i = 0; i < names.length; i++) {
-      const joined = waitForEvent(sockets[i], 'joinRoomSuccess');
+      const joined = waitForEvent<{ reconnectToken: string }>(sockets[i], 'joinRoomSuccess');
       sockets[i].emit('joinRoom', { roomId, name: names[i] });
-      await joined;
+      tokens.push((await joined).reconnectToken);
     }
-    const players = names.map((name, i) => ({ name, socket: sockets[i] }));
+    const players = names.map((name, i) => ({ name, socket: sockets[i], token: tokens[i] }));
     return { roomId, players };
   }
 
   /** Starts the game and resolves with the first drawer and the word options they got. */
-  async function startAndGetDrawer(players: { name: string; socket: ClientSocket }[]) {
+  async function startAndGetDrawer<P extends { name: string; socket: ClientSocket }>(players: P[]) {
     const optionPromises = players.map((p) =>
       waitForEvent<{ options: string[] }>(p.socket, 'wordOptions').then((data) => ({ player: p, options: data.options }))
     );
@@ -426,13 +443,785 @@ describe('game flow (Socket.IO integration)', () => {
     dana.emit('createRoom', { roomId, name: 'SomethingElse' });
     await waitForEvent(dana, 'createRoomSuccess');
     for (const [socket, name] of [[dana, 'ignored'], [eli, 'Eli']] as const) {
-      const joined = waitForEvent(socket, 'joinRoomSuccess');
+      const joined = waitForEvent<{ name: string }>(socket, 'joinRoomSuccess');
       socket.emit('joinRoom', { roomId, name });
-      await joined;
+      const confirmed = await joined;
+      expect(confirmed.name).toBe(socket === dana ? 'Dana' : 'Eli');
     }
 
     const started = waitForEvent(eli, 'gameStarted');
     dana.emit('startGame');
     await started;
   });
+
+  it('refuses a join that lands while the game is starting', async () => {
+    const { roomId, players } = await setupRoom(['Alice', 'Bob']);
+    const original = vi.mocked(joinRoomRecord).getMockImplementation()!;
+    vi.mocked(joinRoomRecord).mockImplementationOnce(async (id) => {
+      await sleep(150);
+      return original(id);
+    });
+
+    const cara = await join(testServer.url);
+    const lists = collect<{ players: { name: string }[] }>(players[0].socket, 'playerList');
+    const refused = waitForEvent<{ message: string }>(cara, 'joinError');
+    cara.emit('joinRoom', { roomId, name: 'Cara' });
+    await sleep(30); // let Cara's lookup be the delayed one
+    const started = waitForEvent(players[0].socket, 'gameStarted');
+    players[0].socket.emit('startGame');
+
+    expect((await refused).message).toBe('Game already started. Cannot join.');
+    await started;
+    await sleep(100);
+    expect(lists.some((l) => l.players.some((p) => p.name === 'Cara'))).toBe(false);
+  });
+
+  it('counts only players still seated when the host starts', async () => {
+    const { players } = await setupRoom(['Alice', 'Bob', 'Cara']);
+    const original = vi.mocked(joinRoomRecord).getMockImplementation()!;
+    vi.mocked(joinRoomRecord).mockImplementationOnce(async (id) => {
+      await sleep(150);
+      return original(id);
+    });
+
+    const started = collect(players[0].socket, 'gameStarted');
+    const failure = waitForEvent<{ message: string }>(players[0].socket, 'startGameError');
+    players[0].socket.emit('startGame');
+    await sleep(30);
+    dropClient(players[1].socket);
+    dropClient(players[2].socket);
+
+    expect((await failure).message).toBe('Need at least 2 connected players to start.');
+    expect(started).toHaveLength(0);
+  });
+
+  it('rate-limits startGame', async () => {
+    const { players } = await setupRoom(['Alice', 'Bob']);
+    vi.mocked(joinRoomRecord).mockClear();
+    for (let i = 0; i < 15; i++) players[1].socket.emit('startGame');
+    await sleep(200);
+    expect(vi.mocked(joinRoomRecord).mock.calls.length).toBeLessThanOrEqual(10);
+  });
+
+  it('keys the join limit on the address the trusted proxy saw', async () => {
+    const previous = process.env.TRUST_PROXY;
+    process.env.TRUST_PROXY = '1';
+    await testServer.close();
+    try {
+      testServer = await startTestServer({ reconnectGraceMs: GRACE_MS });
+      const results: string[] = [];
+      for (let i = 0; i < 11; i++) {
+        const socket = await connectClient(testServer.url, undefined, {
+          'X-Forwarded-For': `${Math.random().toString(36).slice(2)}, 10.0.0.9`,
+        });
+        clients.push(socket);
+        const failed = waitForEvent<{ message: string }>(socket, 'joinError');
+        socket.emit('joinRoom', { roomId: 'ZZZZ', name: `P${i}` });
+        results.push((await failed).message);
+      }
+      expect(results[10]).toBe('Too many requests. Please slow down.');
+      expect(results[9]).not.toBe('Too many requests. Please slow down.');
+    } finally {
+      if (previous === undefined) delete process.env.TRUST_PROXY;
+      else process.env.TRUST_PROXY = previous;
+    }
+  });
+
+  it('lets a held seat rejoin even when the IP is over the join limit', async () => {
+    const { roomId, others } = await liveTurn(); // uses 4 points
+    const spammer = await join(testServer.url);
+    for (let i = 0; i < 6; i++) {
+      const failed = waitForEvent(spammer, 'joinError');
+      spammer.emit('joinRoom', { roomId: 'ZZZZ', name: 'Spam' });
+      await failed;
+    }
+    const limited = waitForEvent<{ message: string }>(spammer, 'joinError');
+    spammer.emit('joinRoom', { roomId: 'ZZZZ', name: 'Spam' });
+    expect((await limited).message).toBe('Too many requests. Please slow down.');
+
+    const token = (others[0] as { token?: string }).token as string;
+    dropNetwork(others[0].socket);
+    const { joined } = await rejoin(roomId, others[0].name, token);
+    expect(joined.rejoined).toBe(true);
+  });
+
+  it('rate-limits clearCanvas', async () => {
+    const { roomId, drawer, others } = await liveTurn();
+    const cleared = collect(others[0].socket, 'canvasCleared');
+    for (let i = 0; i < 100; i++) drawer.socket.emit('clearCanvas', { roomId });
+    await sleep(300);
+    expect(cleared.length).toBeGreaterThan(0);
+    expect(cleared.length).toBeLessThanOrEqual(60);
+  });
+
+  // ------------------------------------------------------------------
+  // Host claim and room lifetime
+  // ------------------------------------------------------------------
+
+  /** Creates a room from a fresh socket and resolves with the socket, room id and host token. */
+  async function createAs(name: string, roomId = uniqueRoomId()) {
+    const socket = await join(testServer.url);
+    const created = waitForEvent<{ roomId: string; hostToken: string }>(socket, 'createRoomSuccess');
+    socket.emit('createRoom', { roomId, name, rounds: 1, timePerRound: 30 });
+    return { socket, roomId, hostToken: (await created).hostToken };
+  }
+
+  it('reserves the host name for the creator', async () => {
+    const { socket: alice, roomId, hostToken } = await createAs('Alice');
+    expect(hostToken).toEqual(expect.any(String));
+
+    const impostor = await join(testServer.url);
+    const refused = waitForEvent<{ message: string }>(impostor, 'joinError');
+    impostor.emit('joinRoom', { roomId, name: 'Alice' });
+    expect((await refused).message).toBe('Name already taken in this room.');
+
+    const list = waitForEvent<{ hostName: string }>(alice, 'playerList');
+    alice.emit('joinRoom', { roomId, name: 'Alice' });
+    expect((await list).hostName).toBe('Alice');
+  });
+
+  it('lets the creator take the host seat from a new socket with the host token', async () => {
+    const { roomId, hostToken } = await createAs('Alice');
+    const fresh = await join(testServer.url);
+    const list = waitForEvent<{ hostName: string; players: { name: string }[] }>(fresh, 'playerList');
+    const joined = waitForEvent(fresh, 'joinRoomSuccess');
+    fresh.emit('joinRoom', { roomId, name: 'Alice', hostToken });
+    await joined;
+    const { hostName, players } = await list;
+    expect(hostName).toBe('Alice');
+    expect(players.map((p) => p.name)).toContain('Alice');
+  });
+
+  it('refuses to create a room whose code is still live in memory', async () => {
+    const { roomId, players } = await setupRoom(['Alice', 'Bob']);
+    // Simulate the database record expiring while the room is still in memory.
+    vi.mocked(createRoomRecord).mockResolvedValueOnce({} as never);
+    const other = await join(testServer.url);
+    const failed = waitForEvent<{ message: string }>(other, 'createRoomError');
+    other.emit('createRoom', { roomId, name: 'Mallory', rounds: 1, timePerRound: 30 });
+    expect((await failed).message).toBe('Room already exists');
+
+    const cara = await join(testServer.url);
+    const list = waitForEvent<{ players: { name: string }[] }>(players[0].socket, 'playerList');
+    cara.emit('joinRoom', { roomId, name: 'Cara' });
+    expect((await list).players.map((p) => p.name)).toEqual(['Alice', 'Bob', 'Cara']);
+
+    // Drain the queued value if the fix never reached the database call.
+    const created = await createAs('Drain');
+    expect(created.hostToken).toEqual(expect.any(String));
+  });
+
+  it('hides database errors when creating a room', async () => {
+    vi.mocked(createRoomRecord).mockRejectedValueOnce(new Error('E11000 duplicate key error'));
+    const socket = await join(testServer.url);
+    const failed = waitForEvent<{ message: string }>(socket, 'createRoomError');
+    socket.emit('createRoom', { roomId: uniqueRoomId(), name: 'Alice', rounds: 1, timePerRound: 30 });
+    expect((await failed).message).toBe('Could not create the room. Please try again.');
+  });
+
+  it('refreshes the room record when a seat is reclaimed with a token', async () => {
+    // Mid-game, a dropped seat is held; in the lobby it would be released at once.
+    const { roomId, others } = await liveTurn();
+    vi.mocked(touchRoom).mockClear();
+    dropNetwork(others[0].socket);
+    await rejoin(roomId, others[0].name, (others[0] as { token?: string }).token as string);
+    await vi.waitFor(() => expect(touchRoom).toHaveBeenCalledWith(roomId));
+  });
+
+  it('refreshes the room record on join and start', async () => {
+    vi.mocked(touchRoom).mockClear();
+    const { roomId, players } = await setupRoom(['Alice', 'Bob']);
+    await vi.waitFor(() => expect(touchRoom).toHaveBeenCalledWith(roomId));
+    vi.mocked(touchRoom).mockClear();
+    const started = waitForEvent(players[0].socket, 'gameStarted');
+    players[0].socket.emit('startGame');
+    await started;
+    await vi.waitFor(() => expect(touchRoom).toHaveBeenCalledWith(roomId));
+  });
+
+  it('records a logged-in leaver as played, not won', async () => {
+    const names = ['Alice', 'Bob', 'Cara'];
+    const sockets: ClientSocket[] = [];
+    for (const name of names) {
+      const token = signToken({ userId: `${name.toLowerCase()}-user-id`, displayName: name });
+      sockets.push(await join(testServer.url, `token=${token}`));
+    }
+    const roomId = uniqueRoomId();
+    sockets[0].emit('createRoom', { roomId, name: 'Alice', rounds: 1, timePerRound: 30 });
+    await waitForEvent(sockets[0], 'createRoomSuccess');
+    for (const socket of sockets) {
+      const joined = waitForEvent(socket, 'joinRoomSuccess');
+      socket.emit('joinRoom', { roomId, name: 'ignored' });
+      await joined;
+    }
+    const players = names.map((name, i) => ({ name, socket: sockets[i] }));
+
+    const { drawer, options, others } = await startAndGetDrawer(players);
+    const [stayer, leaver] = others;
+    const started = waitForEvent(stayer.socket, 'roundStart');
+    drawer.socket.emit('chooseWord', { roomId, word: options[0] });
+    await started;
+
+    dropClient(leaver.socket); // a deliberate leave
+    await sleep(100);
+
+    const nextOptions = waitForEvent<{ options: string[] }>(stayer.socket, 'wordOptions');
+    stayer.socket.emit('chatMessage', { roomId, user: stayer.name, text: options[0] });
+    const { options: nextWords } = await nextOptions;
+
+    const gameOver = waitForEvent(drawer.socket, 'gameOver');
+    const live = waitForEvent(drawer.socket, 'roundStart');
+    stayer.socket.emit('chooseWord', { roomId, word: nextWords[0] });
+    await live;
+    drawer.socket.emit('chatMessage', { roomId, user: drawer.name, text: nextWords[0] });
+    await gameOver;
+
+    await vi.waitFor(() => expect(createGameResult).toHaveBeenCalledTimes(3));
+    expect(createGameResult).toHaveBeenCalledWith(expect.objectContaining({ displayName: leaver.name, won: false }));
+  }, 30000);
+
+  // ------------------------------------------------------------------
+  // v2 gameplay: strokes, undo, hints, close guesses, guessed-only chat
+  // ------------------------------------------------------------------
+
+  /** Starts a 3-player game and has the drawer pick a word; resolves when guessing is open. */
+  async function liveTurn(settings: Record<string, number> = { rounds: 1, timePerRound: 30 }) {
+    const { roomId, players } = await setupRoom(['Alice', 'Bob', 'Cara'], settings);
+    const { drawer, options, others } = await startAndGetDrawer(players);
+    const word = options[0];
+    const live = Promise.all(others.map((p) => waitForEvent(p.socket, 'roundStart')));
+    drawer.socket.emit('chooseWord', { roomId, word });
+    await live;
+    return { roomId, drawer, others, word };
+  }
+
+  it('relays normalised stroke segments and lets the drawer undo the last stroke', async () => {
+    const { roomId, drawer, others } = await liveTurn();
+    const received = collect<{ strokeId: string }>(others[0].socket, 'drawing');
+
+    const segment = (strokeId: string, x: number) => ({
+      roomId, strokeId, from: null, to: { x, y: 0.5 }, color: '#ff0000', size: 8,
+    });
+    drawer.socket.emit('drawing', segment('s1', 0.1));
+    drawer.socket.emit('drawing', segment('s2', 0.2));
+    await vi.waitFor(() => expect(received).toHaveLength(2));
+    expect(received[1]).toEqual({ strokeId: 's2', from: null, to: { x: 0.2, y: 0.5 }, color: '#ff0000', size: 8 });
+
+    // A guesser can't undo; the drawer's undo removes only the latest stroke.
+    const undone = waitForEvent<{ strokeId: string }>(others[0].socket, 'strokeUndone');
+    others[1].socket.emit('undoStroke', { roomId });
+    drawer.socket.emit('undoStroke', { roomId });
+    expect(await undone).toEqual({ strokeId: 's2' });
+  });
+
+  const batchSegment = (strokeId: string, x: number) => ({
+    strokeId, from: null, to: { x, y: 0.5 }, color: '#ff0000', size: 8,
+  });
+
+  it('relays a 120 Hz stroke without dropping segments', async () => {
+    const { roomId, drawer, others } = await liveTurn();
+    const received = collect<{ segments: unknown[] }>(others[0].socket, 'drawingBatch');
+
+    for (let i = 0; i < 30; i++) {
+      const segments = Array.from({ length: 4 }, (_, j) => batchSegment('s1', (i * 4 + j) / 200));
+      drawer.socket.emit('drawingBatch', { roomId, segments });
+    }
+    await vi.waitFor(() => expect(received.reduce((n, b) => n + b.segments.length, 0)).toBe(120));
+
+    const offline = waitForEvent(drawer.socket, 'playerList');
+    dropNetwork(others[0].socket);
+    await offline;
+    const back = await rejoin(roomId, 'ignored-name', others[0].token);
+    expect(back.sync.strokes).toHaveLength(120);
+  });
+
+  it('keeps undo in step after a batched stroke', async () => {
+    const { roomId, drawer, others } = await liveTurn();
+    const received = collect<{ segments: unknown[] }>(others[0].socket, 'drawingBatch');
+    drawer.socket.emit('drawingBatch', { roomId, segments: [batchSegment('s1', 0.1), batchSegment('s1', 0.2)] });
+    drawer.socket.emit('drawingBatch', { roomId, segments: [batchSegment('s2', 0.3)] });
+    await vi.waitFor(() => expect(received).toHaveLength(2));
+
+    const undone = waitForEvent<{ strokeId: string }>(others[0].socket, 'strokeUndone');
+    drawer.socket.emit('undoStroke', { roomId });
+    expect((await undone).strokeId).toBe('s2');
+  });
+
+  it('ignores drawingBatch from a non-drawer', async () => {
+    const { roomId, others } = await liveTurn();
+    const received = collect(others[1].socket, 'drawingBatch');
+    others[0].socket.emit('drawingBatch', { roomId, segments: [batchSegment('s1', 0.1)] });
+    await sleep(200);
+    expect(received).toHaveLength(0);
+  });
+
+  it('privately tells a guesser they are close without broadcasting the near-miss', async () => {
+    const { roomId, others, word } = await liveTurn();
+    const [guesser, bystander] = others;
+    const nearMiss = word.slice(0, -1) + (word.endsWith('z') ? 'y' : 'z');
+
+    const seenByBystander = collect<{ text: string }>(bystander.socket, 'chatMessage');
+    const close = waitForEvent<{ text: string }>(guesser.socket, 'closeGuess');
+    guesser.socket.emit('chatMessage', { roomId, user: guesser.name, text: nearMiss });
+
+    expect((await close).text).toBe(nearMiss);
+    await sleep(200);
+    expect(seenByBystander.map((m) => m.text)).not.toContain(nearMiss);
+  });
+
+  it('keeps a guess that contains the word private', async () => {
+    const { roomId, others, word } = await liveTurn();
+    const [sender, bystander] = others;
+
+    const seenByBystander = collect<{ text: string }>(bystander.socket, 'chatMessage');
+    const close = waitForEvent<{ text: string }>(sender.socket, 'closeGuess');
+    sender.socket.emit('chatMessage', { roomId, user: sender.name, text: `is it a ${word}?` });
+
+    expect((await close).text).toBe(`is it a ${word}?`);
+    await sleep(300);
+    expect(seenByBystander.some((m) => m.text.includes(word))).toBe(false);
+  });
+
+  it('gives a player who already guessed the full word after a refresh', async () => {
+    const { roomId, others, word } = await liveTurn();
+    const [guesser, bystander] = others;
+
+    const correct = waitForEvent(bystander.socket, 'pointsUpdate');
+    guesser.socket.emit('chatMessage', { roomId, user: guesser.name, text: word });
+    await correct;
+
+    dropNetwork(guesser.socket);
+    await sleep(100);
+    const back = await rejoin(roomId, guesser.name, guesser.token);
+    expect(back.sync.word).toBe(word);
+  });
+
+  it('keeps chat from players who guessed among them and the drawer, then reports turn gains', async () => {
+    const { roomId, drawer, others, word } = await liveTurn();
+    const [first, second] = others;
+
+    // Each client gets "<first> guessed the word!" on its own connection, so wait
+    // for the drawer's copy too or it would land in the next listener.
+    const firstCorrect = Promise.all([waitForEvent(second.socket, 'chatMessage'), waitForEvent(drawer.socket, 'chatMessage')]);
+    first.socket.emit('chatMessage', { roomId, user: first.name, text: word });
+    await firstCorrect;
+
+    const toDrawer = waitForEvent<{ text: string; guessed?: boolean }>(drawer.socket, 'chatMessage');
+    const seenBySecond = collect<{ text: string }>(second.socket, 'chatMessage');
+    first.socket.emit('chatMessage', { roomId, user: first.name, text: 'that was easy' });
+    expect(await toDrawer).toMatchObject({ text: 'that was easy', guessed: true });
+    await sleep(200);
+    expect(seenBySecond.map((m) => m.text)).not.toContain('that was easy');
+
+    const ended = waitForEvent<{ word: string; gains: { name: string; points: number }[] }>(drawer.socket, 'turnEnded');
+    second.socket.emit('chatMessage', { roomId, user: second.name, text: word });
+    const summary = await ended;
+    expect(summary.word).toBe(word);
+    expect(summary.gains.map((g) => g.name).sort()).toEqual([drawer.name, first.name, second.name].sort());
+    expect(summary.gains.find((g) => g.name === drawer.name)?.points).toBe(100);
+  });
+
+  it('reveals letters to guessers (not the drawer) as the turn runs down', async () => {
+    const { drawer, others, word } = await liveTurn({ rounds: 1, timePerRound: 10 });
+    const drawerHints = collect(drawer.socket, 'hint');
+    const hint = await waitForEvent<{ word: string }>(others[0].socket, 'hint');
+
+    const letters = hint.word.split(' ').filter((c) => c !== '');
+    expect(letters).toHaveLength(word.replace(/\s/g, '').length);
+    expect(letters.filter((c) => c !== '_').length).toBeGreaterThanOrEqual(1);
+    expect(letters.some((c) => c === '_')).toBe(true);
+    expect(drawerHints).toEqual([]);
+  }, 15000);
+
+  // ------------------------------------------------------------------
+  // v2 phase 2: reconnect, lobby settings, word packs, kick
+  // ------------------------------------------------------------------
+
+  /** Simulates a dropped network (not a deliberate leave): the server sees "transport close". */
+  function dropNetwork(socket: ClientSocket) {
+    socket.io.reconnection(false);
+    socket.io.engine.close();
+    clients.splice(clients.indexOf(socket), 1);
+  }
+
+  type SyncState = {
+    phase: string;
+    round: number;
+    drawerId: string | null;
+    isDrawer: boolean;
+    word: string | null;
+    wordOptions: string[] | null;
+    timeLeft: number;
+    scores: Record<string, number>;
+    guessed: string[];
+    strokes: { strokeId: string }[];
+    chat: { text: string }[];
+  };
+
+  /** Opens a fresh socket and reclaims a seat with its reconnect token. */
+  async function rejoin(roomId: string, name: string, token: string) {
+    const socket = await join(testServer.url);
+    const sync = waitForEvent<SyncState>(socket, 'syncState');
+    const joined = waitForEvent<{ rejoined?: boolean; reconnectToken: string }>(socket, 'joinRoomSuccess');
+    socket.emit('joinRoom', { roomId, name, reconnectToken: token });
+    return { socket, joined: await joined, sync: await sync };
+  }
+
+  it('lets a dropped guesser reclaim their seat and score, with the strokes so far', async () => {
+    const { roomId, drawer, others, word } = await liveTurn();
+    const [guesser, bystander] = others;
+
+    const correct = waitForEvent(bystander.socket, 'pointsUpdate');
+    guesser.socket.emit('chatMessage', { roomId, user: guesser.name, text: word });
+    const scoreBefore = (await correct as Record<string, number>)[guesser.name];
+    expect(scoreBefore).toBeGreaterThan(0);
+
+    const seen = collect<{ strokeId: string }>(bystander.socket, 'drawing');
+    for (const [i, x] of [0.1, 0.2].entries()) {
+      drawer.socket.emit('drawing', { roomId, strokeId: `s${i}`, from: null, to: { x, y: 0.5 }, color: '#000000', size: 8 });
+    }
+    await vi.waitFor(() => expect(seen).toHaveLength(2));
+
+    const offline = waitForEvent<{ players: { name: string; connected: boolean }[] }>(bystander.socket, 'playerList');
+    dropNetwork(guesser.socket);
+    expect((await offline).players.find((p) => p.name === guesser.name)).toMatchObject({ connected: false });
+
+    const back = await rejoin(roomId, 'ignored-name', guesser.token);
+    expect(back.joined).toMatchObject({ rejoined: true, reconnectToken: guesser.token });
+    expect(back.sync).toMatchObject({ phase: 'drawing', round: 1, drawerId: drawer.socket.id, isDrawer: false, wordOptions: null });
+    expect(back.sync.scores[guesser.name]).toBe(scoreBefore);
+    expect(back.sync.guessed).toContain(guesser.name);
+    expect(back.sync.strokes.map((s) => s.strokeId)).toEqual(['s0', 's1']);
+    expect(back.sync.word).toBe(word); // this guesser already knows the word
+    expect(back.sync.timeLeft).toBeGreaterThan(0);
+
+    // The seat moved to the new socket rather than being duplicated.
+    const list = await waitForEvent<{ players: { id: string; name: string; connected: boolean }[] }>(bystander.socket, 'playerList');
+    expect(list.players.filter((p) => p.name === guesser.name)).toEqual([
+      { id: back.socket.id, name: guesser.name, connected: true },
+    ]);
+  });
+
+  it('lets a dropped drawer come back with the word and keep drawing', async () => {
+    const { roomId, drawer, others, word } = await liveTurn();
+    dropNetwork(drawer.socket);
+    await sleep(100);
+
+    const back = await rejoin(roomId, drawer.name, drawer.token);
+    expect(back.sync).toMatchObject({ phase: 'drawing', isDrawer: true, drawerId: back.socket.id, word });
+
+    const relayed = waitForEvent<{ strokeId: string }>(others[0].socket, 'drawing');
+    back.socket.emit('drawing', { roomId, strokeId: 'after', from: null, to: { x: 0.5, y: 0.5 }, color: '#000000', size: 8 });
+    expect((await relayed).strokeId).toBe('after');
+  });
+
+  it('tells everyone the new drawer socket after the drawer reconnects', async () => {
+    const { roomId, drawer, others } = await liveTurn();
+    dropNetwork(drawer.socket);
+    await sleep(100);
+
+    const lists = collect<{ drawerId: string | null }>(others[0].socket, 'playerList');
+    const back = await rejoin(roomId, drawer.name, drawer.token);
+    await vi.waitFor(() => expect(lists.some((l) => l.drawerId === back.socket.id)).toBe(true));
+  });
+
+  it('releases a dropped drawer seat after the grace period and skips their turn', async () => {
+    const { roomId, drawer, others } = await liveTurn({ rounds: 1, timePerRound: 60 });
+    const ended = waitForEvent<{ drawerName: string }>(others[0].socket, 'turnEnded');
+    const messages = collect<{ text: string }>(others[0].socket, 'chatMessage');
+    dropNetwork(drawer.socket);
+
+    await sleep(GRACE_MS / 2);
+    expect(messages.some((m) => /didn't reconnect/.test(m.text))).toBe(false); // seat still held
+
+    expect((await ended).drawerName).toBe(drawer.name);
+    expect(messages.some((m) => /didn't reconnect/.test(m.text))).toBe(true);
+
+    // The token no longer matches a seat, so the game refuses them.
+    const late = await join(testServer.url);
+    const refused = waitForEvent<{ message: string }>(late, 'joinError');
+    late.emit('joinRoom', { roomId, name: drawer.name, reconnectToken: drawer.token });
+    expect((await refused).message).toMatch(/already started/i);
+  });
+
+  it('only lets the host change lobby settings, and shares them live', async () => {
+    const { roomId, players } = await setupRoom(['Alice', 'Bob']);
+    const [alice, bob] = players;
+    const bobSees = collect<Record<string, unknown>>(bob.socket, 'settingsUpdated');
+
+    bob.socket.emit('updateSettings', { roomId, rounds: 7 });
+    await sleep(200);
+    expect(bobSees).toEqual([]);
+
+    const aliceGets = waitForEvent<Record<string, unknown>>(alice.socket, 'settingsUpdated');
+    alice.socket.emit('updateSettings', { roomId, rounds: 5, timePerRound: 45, category: 'animals', customWords: 'Rocket Ship, rocket ship ,comet' });
+    expect(await aliceGets).toMatchObject({ rounds: 5, timePerRound: 45, category: 'animals', customWords: ['rocket ship', 'comet'] });
+    await vi.waitFor(() => expect(bobSees).toHaveLength(1));
+    expect(bobSees[0]).toMatchObject({ rounds: 5, category: 'animals', customWordCount: 2 });
+    expect(bobSees[0]).not.toHaveProperty('customWords'); // the list would spoil the answers
+
+    const started = waitForEvent<{ rounds: number; timePerRound: number }>(bob.socket, 'gameStarted');
+    alice.socket.emit('startGame');
+    expect(await started).toMatchObject({ rounds: 5, timePerRound: 45 });
+
+    // Locked once the game is running.
+    alice.socket.emit('updateSettings', { roomId, rounds: 2 });
+    await sleep(200);
+    expect(bobSees).toHaveLength(1);
+  });
+
+  it('rejects invalid custom words and settings that cannot work', async () => {
+    const { roomId, players } = await setupRoom(['Alice', 'Bob', 'Cara']);
+    const host = players[0].socket;
+    const nextError = () => waitForEvent<{ message: string }>(host, 'settingsError');
+
+    let error = nextError();
+    host.emit('updateSettings', { roomId, customWords: 'ok word, x' });
+    expect((await error).message).toMatch(/2–30 characters/);
+
+    error = nextError();
+    host.emit('updateSettings', { roomId, customWords: Array.from({ length: 201 }, (_, i) => `word${i.toString(26).replace(/\d/g, (d) => 'qrstuvwxyz'[Number(d)])}`).join(',') });
+    expect((await error).message).toMatch(/at most 200/i);
+
+    error = nextError();
+    host.emit('updateSettings', { roomId, customWords: 'kite, comet', customWordsOnly: true });
+    expect((await error).message).toMatch(/at least 3 custom words/i);
+
+    error = nextError();
+    host.emit('updateSettings', { roomId, maxPlayers: 2 });
+    expect((await error).message).toMatch(/already 3 players/);
+
+    error = nextError();
+    host.emit('updateSettings', { roomId, category: 'dinosaurs' });
+    await error;
+  });
+
+  it('offers only custom words when the host asks, never repeating a drawn word', async () => {
+    const { roomId, players } = await setupRoom(['Alice', 'Bob'], { rounds: 2, timePerRound: 30 });
+    const custom = ['rocket', 'comet', 'planet', 'galaxy'];
+    const saved = waitForEvent(players[0].socket, 'settingsUpdated');
+    players[0].socket.emit('updateSettings', { roomId, customWords: custom.join(', '), customWordsOnly: true });
+    await saved;
+
+    const drawn: string[] = [];
+    const turn = await startAndGetDrawer(players);
+    let { drawer, options } = turn;
+    for (let t = 0; t < 2; t++) {
+      expect(options.every((w) => custom.includes(w))).toBe(true);
+      expect(options.some((w) => drawn.includes(w))).toBe(false);
+      const guesser = players.find((p) => p !== drawer)!;
+      const live = waitForEvent(guesser.socket, 'roundStart');
+      drawer.socket.emit('chooseWord', { roomId, word: options[0] });
+      await live;
+      drawn.push(options[0]);
+      if (t === 1) break;
+      const next = players.map((p) =>
+        waitForEvent<{ options: string[] }>(p.socket, 'wordOptions').then((d) => ({ player: p, options: d.options }))
+      );
+      guesser.socket.emit('chatMessage', { roomId, user: guesser.name, text: options[0] });
+      ({ player: drawer, options } = await Promise.race(next));
+    }
+  });
+
+  it('lets the host kick a player from the lobby and keeps them out', async () => {
+    const { roomId, players } = await setupRoom(['Alice', 'Bob', 'Cara']);
+    const [alice, bob, cara] = players;
+
+    // Non-hosts can't kick.
+    const caraSees = collect(cara.socket, 'kicked');
+    bob.socket.emit('kickPlayer', { roomId, playerId: cara.socket.id });
+    await sleep(200);
+    expect(caraSees).toEqual([]);
+
+    const kicked = waitForEvent<{ message: string }>(bob.socket, 'kicked');
+    const list = waitForEvent<{ players: { name: string }[] }>(alice.socket, 'playerList');
+    alice.socket.emit('kickPlayer', { roomId, playerId: bob.socket.id });
+    expect((await kicked).message).toMatch(/removed/);
+    expect((await list).players.map((p) => p.name)).toEqual(['Alice', 'Cara']);
+    clients.splice(clients.indexOf(bob.socket), 1);
+
+    const retry = await join(testServer.url);
+    const refused = waitForEvent<{ message: string }>(retry, 'joinError');
+    retry.emit('joinRoom', { roomId, name: 'Bob' });
+    expect((await refused).message).toMatch(/removed you/);
+  });
+
+  // ------------------------------------------------------------------
+  // v2 phase 3: fill bucket, end-of-game gallery
+  // ------------------------------------------------------------------
+
+  it('relays drawer fills in order with strokes, ignores others, and lets the drawer undo a fill', async () => {
+    const { roomId, drawer, others } = await liveTurn();
+    const [guesser, bystander] = others;
+    const fills = collect<Record<string, unknown>>(bystander.socket, 'fill');
+    const lines = collect<Record<string, unknown>>(bystander.socket, 'drawing');
+
+    drawer.socket.emit('drawing', { roomId, strokeId: 's1', from: null, to: { x: 0.2, y: 0.2 }, color: '#000000', size: 8 });
+    drawer.socket.emit('fill', { roomId, strokeId: 'f1', x: 0.5, y: 0.5, color: '#ef4444' });
+    // Not the drawer, out of range, and a bad colour: all dropped.
+    guesser.socket.emit('fill', { roomId, strokeId: 'f2', x: 0.5, y: 0.5, color: '#ef4444' });
+    drawer.socket.emit('fill', { roomId, strokeId: 'f3', x: 1.5, y: 0.5, color: '#ef4444' });
+    drawer.socket.emit('fill', { roomId, strokeId: 'f4', x: 0.5, y: 0.5, color: 'red' });
+
+    await vi.waitFor(() => expect(fills).toHaveLength(1));
+    await sleep(200);
+    expect(lines).toHaveLength(1);
+    expect(fills).toEqual([{ type: 'fill', strokeId: 'f1', x: 0.5, y: 0.5, color: '#ef4444' }]);
+
+    // A rejoining player replays the stored history in the order it was drawn.
+    dropNetwork(guesser.socket);
+    await sleep(200);
+    const back = await rejoin(roomId, guesser.name, guesser.token);
+    expect(back.sync.strokes).toEqual([
+      { strokeId: 's1', from: null, to: { x: 0.2, y: 0.2 }, color: '#000000', size: 8 },
+      { type: 'fill', strokeId: 'f1', x: 0.5, y: 0.5, color: '#ef4444' },
+    ]);
+
+    const undone = waitForEvent<{ strokeId: string }>(bystander.socket, 'strokeUndone');
+    drawer.socket.emit('undoStroke', { roomId });
+    expect(await undone).toEqual({ strokeId: 'f1' });
+  });
+
+  it('sends each drawn turn with gameOver as a gallery, skipping turns with no drawing', async () => {
+    const { roomId, players } = await setupRoom(['Alice', 'Bob'], { rounds: 1, timePerRound: 30 });
+    const gameOver = Promise.race(
+      players.map((p) => waitForEvent<{ scores: unknown[]; gallery: { drawerName: string; word: string; ops: unknown[] }[] }>(p.socket, 'gameOver'))
+    );
+
+    // Turn 1: the drawer draws a stroke and a fill, then the other player guesses.
+    const first = await startAndGetDrawer(players);
+    const guesser1 = first.others[0];
+    const word1 = first.options[0];
+    let live = waitForEvent(guesser1.socket, 'roundStart');
+    first.drawer.socket.emit('chooseWord', { roomId, word: word1 });
+    await live;
+    first.drawer.socket.emit('drawing', { roomId, strokeId: 'a', from: null, to: { x: 0.1, y: 0.1 }, color: '#000000', size: 8 });
+    first.drawer.socket.emit('drawing', { roomId, strokeId: 'a', from: { x: 0.1, y: 0.1 }, to: { x: 0.3, y: 0.3 }, color: '#000000', size: 8 });
+    first.drawer.socket.emit('fill', { roomId, strokeId: 'b', x: 0.8, y: 0.8, color: '#22c55e' });
+    await sleep(200);
+    const nextOptions = waitForEvent<{ options: string[] }>(guesser1.socket, 'wordOptions');
+    guesser1.socket.emit('chatMessage', { roomId, user: guesser1.name, text: word1 });
+
+    // Turn 2: the new drawer picks a word but draws nothing.
+    const word2 = (await nextOptions).options[0];
+    live = waitForEvent(first.drawer.socket, 'roundStart');
+    guesser1.socket.emit('chooseWord', { roomId, word: word2 });
+    await live;
+    first.drawer.socket.emit('chatMessage', { roomId, user: first.drawer.name, text: word2 });
+
+    const { gallery } = await gameOver;
+    expect(gallery).toEqual([
+      {
+        drawerName: first.drawer.name,
+        word: word1,
+        ops: [
+          { strokeId: 'a', from: null, to: { x: 0.1, y: 0.1 }, color: '#000000', size: 8 },
+          { strokeId: 'a', from: { x: 0.1, y: 0.1 }, to: { x: 0.3, y: 0.3 }, color: '#000000', size: 8 },
+          { type: 'fill', strokeId: 'b', x: 0.8, y: 0.8, color: '#22c55e' },
+        ],
+      },
+    ]);
+  }, 20000);
+
+  // ------------------------------------------------------------------
+  // Final-review fixes
+  // ------------------------------------------------------------------
+
+  it('tells a replaced socket its seat moved before disconnecting it', async () => {
+    const { roomId, others } = await liveTurn();
+    const [guesser] = others;
+    const moved = waitForEvent(guesser.socket, 'sessionMoved');
+    const closed = waitForEvent<string>(guesser.socket, 'disconnect');
+    const back = await rejoin(roomId, guesser.name, guesser.token);
+    await moved;
+    expect(await closed).toBe('io server disconnect');
+    expect(back.joined).toMatchObject({ rejoined: true });
+  });
+
+  it('refuses the host name with a wrong host token while the claim is live', async () => {
+    const { roomId } = await createAs('Alice');
+    const impostor = await join(testServer.url);
+    const refused = waitForEvent<{ message: string }>(impostor, 'joinError');
+    impostor.emit('joinRoom', { roomId, name: 'Alice', hostToken: 'not-the-token' });
+    expect((await refused).message).toBe('Name already taken in this room.');
+  });
+
+  it('lets the host name be taken once the claim has expired', async () => {
+    const short = await startTestServer({ reconnectGraceMs: GRACE_MS, hostClaimMs: 150 });
+    try {
+      const creator = await connectClient(short.url);
+      clients.push(creator);
+      const roomId = uniqueRoomId();
+      const created = waitForEvent(creator, 'createRoomSuccess');
+      creator.emit('createRoom', { roomId, name: 'Alice', rounds: 1, timePerRound: 30 });
+      await created;
+      await sleep(300);
+
+      const other = await connectClient(short.url);
+      clients.push(other);
+      const joined = waitForEvent(other, 'joinRoomSuccess');
+      other.emit('joinRoom', { roomId, name: 'Alice' });
+      await joined;
+    } finally {
+      await short.close();
+    }
+  });
+
+  it('saves a renamed account under its current display name', async () => {
+    const names = ['Alice', 'Bob'];
+    const sockets: ClientSocket[] = [];
+    for (const name of names) {
+      const token = signToken({ userId: `${name.toLowerCase()}-user-id`, displayName: name });
+      sockets.push(await join(testServer.url, `token=${token}`));
+    }
+    accountNames.set('alice-user-id', 'AliceRenamed');
+    accountNames.set('bob-user-id', 'Bob');
+    const roomId = uniqueRoomId();
+    sockets[0].emit('createRoom', { roomId, name: 'Alice', rounds: 1, timePerRound: 30 });
+    await waitForEvent(sockets[0], 'createRoomSuccess');
+    for (const socket of sockets) {
+      const joined = waitForEvent(socket, 'joinRoomSuccess');
+      socket.emit('joinRoom', { roomId, name: 'ignored' });
+      await joined;
+    }
+    const players = names.map((name, i) => ({ name, socket: sockets[i] }));
+    const { drawer, options, others } = await startAndGetDrawer(players);
+    const live = waitForEvent(others[0].socket, 'roundStart');
+    drawer.socket.emit('chooseWord', { roomId, word: options[0] });
+    await live;
+    const nextOptions = waitForEvent<{ options: string[] }>(drawer.socket, 'wordOptions');
+    const nextOptions2 = waitForEvent<{ options: string[] }>(others[0].socket, 'wordOptions');
+    others[0].socket.emit('chatMessage', { roomId, user: others[0].name, text: options[0] });
+    const second = await Promise.race([
+      nextOptions.then((d) => ({ who: drawer, d })),
+      nextOptions2.then((d) => ({ who: others[0], d })),
+    ]);
+    const guesser = second.who === drawer ? others[0] : drawer;
+    const gameOver = waitForEvent(guesser.socket, 'gameOver');
+    const live2 = waitForEvent(guesser.socket, 'roundStart');
+    second.who.socket.emit('chooseWord', { roomId, word: second.d.options[0] });
+    await live2;
+    guesser.socket.emit('chatMessage', { roomId, user: guesser.name, text: second.d.options[0] });
+    await gameOver;
+
+    await vi.waitFor(() => expect(createGameResult).toHaveBeenCalledTimes(2));
+    expect(createGameResult).toHaveBeenCalledWith(expect.objectContaining({ userId: 'alice-user-id', displayName: 'AliceRenamed' }));
+    expect(createGameResult).toHaveBeenCalledWith(expect.objectContaining({ userId: 'bob-user-id', displayName: 'Bob' }));
+  }, 30000);
+
+  it('does not send a hint to a guesser who already has the full word', async () => {
+    const { roomId, drawer, others, word } = await liveTurn({ rounds: 1, timePerRound: 10 });
+    const [solver, waiting] = others;
+    const correct = waitForEvent(waiting.socket, 'pointsUpdate');
+    solver.socket.emit('chatMessage', { roomId, user: solver.name, text: word });
+    await correct;
+
+    const solverHints = collect(solver.socket, 'hint');
+    const drawerHints = collect(drawer.socket, 'hint');
+    const hint = await waitForEvent(waiting.socket, 'hint');
+    expect(hint).toBeTruthy();
+    await sleep(150);
+    expect(solverHints).toEqual([]);
+    expect(drawerHints).toEqual([]);
+  }, 15000);
 });

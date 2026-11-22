@@ -1,14 +1,58 @@
 @import "tailwindcss";
 
+/* Design tokens: one palette for every page (bg-ink, text-cream, border-line...). */
+@theme {
+  --color-ink: #0d0d0d;
+  --color-panel: #1a1a1a;
+  --color-panel-2: #262626;
+  --color-line: #3a3a3a;
+  --color-cream: #ffedd2;
+  --color-gold: #f4d03f;
+  --color-success: #4ade80;
+  --color-danger: #f87171;
+  --font-display: "Kalam", cursive;
 
+  /* Fixed colours for illustrations (the wooden door on /room, the dark room
+     behind it). These stay the same in both themes on purpose. */
+  --color-parchment: #ffedd2;
+  --color-brass: #f4d03f;
+  --color-soot: #0a0a0a;
+  --color-soot-2: #1a1a1a;
+  --color-wood: #5e3a22;
+  --color-wood-dark: #1a0f07;
+  --color-wood-light: #4a2e1a;
+  --color-wood-deep: #2c1a0e;
+}
+
+/*
+ * Light theme: the same token names with paper-and-ink values, so every
+ * `bg-ink` / `text-cream` / `border-line` flips without touching components.
+ * `cream` is the main text colour, so in light mode it becomes dark brown.
+ * Set by the theme toggle (src/theme.ts) on <html data-theme="light">.
+ */
+:root[data-theme="light"] {
+  --color-ink: #faf5ec;
+  --color-panel: #ffffff;
+  --color-panel-2: #f1e8d8;
+  --color-line: #d8c8ae;
+  --color-cream: #2a1d10;
+  --color-gold: #8a5d00;
+  --color-success: #15803d;
+  --color-danger: #b91c1c;
+  color-scheme: light;
+}
+
+:root {
+  color-scheme: dark;
+}
 
 html {
   scroll-behavior: smooth;
 }
 
 body {
-  background-color: #0d0d0d;
-  color: #ffedd2;
+  background-color: var(--color-ink);
+  color: var(--color-cream);
   overflow-x: hidden;
 }
 
@@ -18,20 +62,31 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-  background: #1f1f1f;
+  background: var(--color-panel);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #3e3e3e;
+  background: var(--color-line);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #ffedd2;
+  background: var(--color-cream);
 }
 
-    * {
-  transition: all 0.3s ease;
+/* Visible keyboard focus everywhere. */
+:focus-visible {
+  outline: 2px solid var(--color-gold);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 button {

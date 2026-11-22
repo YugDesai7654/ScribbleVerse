@@ -15,7 +15,10 @@ export function createRateLimiters() {
   // Per-IP limit on room create/join attempts, to prevent spamming MongoDB with rooms.
   const roomActionLimiter = new RateLimiterMemory({ points: 10, duration: 60 }); // 10/min per IP
 
-  return { drawingLimiter, chatLimiter, roomActionLimiter };
+  // Per-socket limit on host lobby actions (settings edits, kicks).
+  const settingsLimiter = new RateLimiterMemory({ points: 10, duration: 5 });
+
+  return { drawingLimiter, chatLimiter, roomActionLimiter, settingsLimiter };
 }
 
 /**

@@ -7,6 +7,7 @@
     "dev": "tsc -b && nodemon dist/index.js",
     "build": "tsc -b",
     "start": "node dist/index.js",
+    "migrate:display-names": "tsc -b && node dist/scripts/dedupeDisplayNames.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -15,6 +16,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@types/proxy-addr": "^2.0.3",
     "bcryptjs": "^3.0.3",
     "cookie": "1.0.2",
     "cookie-parser": "^1.4.7",
@@ -26,6 +28,7 @@
     "mongoose": "^8.16.3",
     "pino": "^10.3.1",
     "pino-http": "^11.0.0",
+    "proxy-addr": "^2.0.8",
     "rate-limiter-flexible": "^11.2.0",
     "socket.io": "^4.8.1",
     "zod": "^4.6.4"
@@ -37,9 +40,15 @@
     "@types/express": "^5.0.3",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^24.0.14",
+    "mongodb-memory-server": "^10.4.3",
     "nodemon": "^3.1.10",
     "socket.io-client": "^4.8.3",
     "typescript": "^5.8.3",
     "vitest": "^5.0.0"
+  },
+  "config": {
+    "mongodbMemoryServer": {
+      "version": "7.0.24"
+    }
   }
 }

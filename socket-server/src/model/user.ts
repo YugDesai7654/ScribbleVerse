@@ -10,6 +10,10 @@ const userSchema = new mongoose.Schema({
   gamesWon: { type: Number, default: 0 },
 });
 
+// Display names are unique ignoring case (strength 2). Existing duplicates must
+// be renamed first with `npm run migrate:display-names`, or the build fails.
+userSchema.index({ displayName: 1 }, { unique: true, collation: { locale: 'en', strength: 2 } });
+
 // Guard against "Cannot overwrite `User` model once compiled" if this module
 // ever gets re-imported against an already-populated mongoose registry (e.g.
 // certain test-runner module-isolation setups).

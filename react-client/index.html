@@ -4,7 +4,25 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/logo.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="ScribbleVerse: a real-time multiplayer drawing and guessing game." />
+    <meta name="theme-color" content="#0d0d0d" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Loaded without blocking first paint; display=swap shows the fallback font until Kalam arrives. -->
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap" onload="this.onload=null;this.rel='stylesheet'" />
+    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap" /></noscript>
     <title>ScribbleVerse</title>
+    <script>
+      // Apply the saved (or OS) theme before first paint, so light-mode users
+      // never see a dark flash. Kept in sync with src/theme.ts.
+      try {
+        var saved = localStorage.getItem("scribbleverse:theme");
+        var theme = saved === "light" || saved === "dark"
+          ? saved
+          : (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+        document.documentElement.dataset.theme = theme;
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

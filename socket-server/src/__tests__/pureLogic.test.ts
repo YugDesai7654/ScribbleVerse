@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { getPlaceholder, getRandomWords, calculateGuessPoints, WORD_LIST } from '../server';
+import { getPlaceholder, getRandomWords, calculateGuessPoints } from '../server';
+import { MIXED_WORDS } from '../game/words';
+import { winnersOf } from '../game/results';
+import { drawingOrderFor, shuffle } from '../game/turnOrder';
 
 describe('getPlaceholder', () => {
   it('replaces each letter with an underscore', () => {
@@ -20,10 +23,10 @@ describe('getRandomWords', () => {
     expect(getRandomWords()).toHaveLength(3);
   });
 
-  it('returns only words that exist in WORD_LIST', () => {
+  it('returns only words from the mixed pack', () => {
     const words = getRandomWords();
     for (const word of words) {
-      expect(WORD_LIST).toContain(word);
+      expect(MIXED_WORDS).toContain(word);
     }
   });
 
@@ -53,5 +56,41 @@ describe('calculateGuessPoints', () => {
     const early = calculateGuessPoints(60, 10);
     const late = calculateGuessPoints(60, 50);
     expect(early).toBeGreaterThan(late);
+  });
+});
+
+describe('drawingOrderFor', () => {
+  it('leaves out disconnected seats', () => {
+    const order = drawingOrderFor([{ id: 'a', connected: true }, { id: 'b', connected: false }, { id: 'c', connected: true }]);
+    expect(order.sort()).toEqual(['a', 'c']);
+  });
+  it('puts each player first about equally often', () => {
+    const counts: Record<string, number> = { a: 0, b: 0, c: 0 };
+    for (let i = 0; i < 6000; i++) counts[drawingOrderFor(['a', 'b', 'c'].map((id) => ({ id, connected: true })))[0]]++;
+    for (const n of Object.values(counts)) expect(n).toBeGreaterThan(1800); // 2000 +/- 10%
+  });
+});
+
+describe('shuffle', () => {
+  it('returns a permutation and leaves the input alone', () => {
+    const input = [1, 2, 3, 4];
+    const out = shuffle(input);
+    expect(out.sort()).toEqual([1, 2, 3, 4]);
+    expect(input).toEqual([1, 2, 3, 4]);
+  });
+});
+
+describe('winnersOf', () => {
+  it('gives every tied top scorer the win', () => {
+    const scores = [{ name: 'Ann', score: 300 }, { name: 'Bo', score: 300 }, { name: 'Cy', score: 100 }];
+    expect(winnersOf(scores, new Set(['Ann', 'Bo', 'Cy']))).toEqual(new Set(['Ann', 'Bo']));
+  });
+  it('gives nobody the win when every score is 0', () => {
+    const scores = [{ name: 'Ann', score: 0 }, { name: 'Bo', score: 0 }];
+    expect(winnersOf(scores, new Set(['Ann', 'Bo'])).size).toBe(0);
+  });
+  it('ignores players who are no longer seated', () => {
+    const scores = [{ name: 'Gone', score: 900 }, { name: 'Ann', score: 300 }, { name: 'Bo', score: 100 }];
+    expect(winnersOf(scores, new Set(['Ann', 'Bo']))).toEqual(new Set(['Ann']));
   });
 });

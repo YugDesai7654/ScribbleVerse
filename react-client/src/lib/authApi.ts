@@ -9,12 +9,47 @@ export interface AuthUser {
   gamesWon: number;
 }
 
+export type LeaderboardPeriod = 'all' | 'week' | 'today';
+
 export interface LeaderboardEntry {
-  id: string;
   displayName: string;
+  totalScore: number;
+  gamesPlayed: number;
+  gamesWon: number;
+  bestScore: number;
+}
+
+export interface GameSummary {
+  id: string;
+  roomId: string;
   score: number;
   won: boolean;
   playedAt: string;
+}
+
+export interface ProfileStats {
+  totalScore: number;
+  gamesPlayed: number;
+  gamesWon: number;
+  /** 0..1 */
+  winRate: number;
+  bestGame: GameSummary | null;
+}
+
+export interface GameHistoryPage {
+  games: GameSummary[];
+  page: number;
+  limit: number;
+  total: number;
+  hasMore: boolean;
+  stats: ProfileStats;
+}
+
+export interface PublicProfile {
+  displayName: string;
+  memberSince: string;
+  stats: ProfileStats;
+  recentGames: GameSummary[];
 }
 
 export class ApiError extends Error {
@@ -69,6 +104,14 @@ export async function fetchMe(): Promise<AuthUser | null> {
   return data.user as AuthUser;
 }
 
-export function fetchLeaderboard() {
-  return request<{ leaderboard: LeaderboardEntry[] }>('/leaderboard');
+export function fetchLeaderboard(period: LeaderboardPeriod = 'all') {
+  return request<{ period: LeaderboardPeriod; leaderboard: LeaderboardEntry[] }>(`/leaderboard?period=${period}`);
+}
+
+export function fetchMyHistory(page = 1, limit = 10) {
+  return request<GameHistoryPage>(`/auth/me/history?page=${page}&limit=${limit}`);
+}
+
+export function fetchPublicProfile(displayName: string) {
+  return request<{ profile: PublicProfile }>(`/users/${encodeURIComponent(displayName)}`);
 }
