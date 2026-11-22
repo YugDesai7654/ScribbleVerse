@@ -99,6 +99,15 @@ export const drawingSchema = z.object({
   size: z.number().min(1).max(60),
 });
 
+/** One segment as relayed to other players (the room is implied). */
+export const strokeSegmentSchema = drawingSchema.omit({ roomId: true });
+
+/** Up to 16 segments in one event, so fast strokes stay under the rate limit. */
+export const drawingBatchSchema = z.object({
+  roomId: roomIdField,
+  segments: z.array(strokeSegmentSchema).min(1).max(16),
+});
+
 /** Flood fill at a point. The server stores it in the turn's history; clients replay it in order. */
 export const fillSchema = z.object({
   roomId: roomIdField,

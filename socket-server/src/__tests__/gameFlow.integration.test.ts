@@ -707,6 +707,47 @@ describe('game flow (Socket.IO integration)', () => {
     expect(await undone).toEqual({ strokeId: 's2' });
   });
 
+  const batchSegment = (strokeId: string, x: number) => ({
+    strokeId, from: null, to: { x, y: 0.5 }, color: '#ff0000', size: 8,
+  });
+
+  it('relays a 120 Hz stroke without dropping segments', async () => {
+    const { roomId, drawer, others } = await liveTurn();
+    const received = collect<{ segments: unknown[] }>(others[0].socket, 'drawingBatch');
+
+    for (let i = 0; i < 30; i++) {
+      const segments = Array.from({ length: 4 }, (_, j) => batchSegment('s1', (i * 4 + j) / 200));
+      drawer.socket.emit('drawingBatch', { roomId, segments });
+    }
+    await vi.waitFor(() => expect(received.reduce((n, b) => n + b.segments.length, 0)).toBe(120));
+
+    const offline = waitForEvent(drawer.socket, 'playerList');
+    dropNetwork(others[0].socket);
+    await offline;
+    const back = await rejoin(roomId, 'ignored-name', others[0].token);
+    expect(back.sync.strokes).toHaveLength(120);
+  });
+
+  it('keeps undo in step after a batched stroke', async () => {
+    const { roomId, drawer, others } = await liveTurn();
+    const received = collect<{ segments: unknown[] }>(others[0].socket, 'drawingBatch');
+    drawer.socket.emit('drawingBatch', { roomId, segments: [batchSegment('s1', 0.1), batchSegment('s1', 0.2)] });
+    drawer.socket.emit('drawingBatch', { roomId, segments: [batchSegment('s2', 0.3)] });
+    await vi.waitFor(() => expect(received).toHaveLength(2));
+
+    const undone = waitForEvent<{ strokeId: string }>(others[0].socket, 'strokeUndone');
+    drawer.socket.emit('undoStroke', { roomId });
+    expect((await undone).strokeId).toBe('s2');
+  });
+
+  it('ignores drawingBatch from a non-drawer', async () => {
+    const { roomId, others } = await liveTurn();
+    const received = collect(others[1].socket, 'drawingBatch');
+    others[0].socket.emit('drawingBatch', { roomId, segments: [batchSegment('s1', 0.1)] });
+    await sleep(200);
+    expect(received).toHaveLength(0);
+  });
+
   it('privately tells a guesser they are close without broadcasting the near-miss', async () => {
     const { roomId, others, word } = await liveTurn();
     const [guesser, bystander] = others;

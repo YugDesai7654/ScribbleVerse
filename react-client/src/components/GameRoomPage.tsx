@@ -10,6 +10,7 @@ import { isMuted, play, setMuted } from "../game/sound"
 import DrawingCanvas from "./game/DrawingCanvas"
 import DrawingToolbar from "./game/DrawingToolbar"
 import { strokeColor, type Tool } from "../game/utils"
+import { createSegmentBatcher, type SegmentBatcher } from "../game/segmentBatcher"
 import WordDisplay from "./game/WordDisplay"
 import ThemeToggle from "./ThemeToggle"
 import TimerRing from "./game/TimerRing"
@@ -269,6 +270,7 @@ export default function GameRoomPage() {
       chatError: (data: { message: string }) => toast(data.message, "error"),
       startGameError: (data: { message: string }) => toast(data.message, "error"),
       drawing: (segment: StrokeSegment) => setSegments((prev) => [...prev, segment]),
+      drawingBatch: ({ segments }: { segments: StrokeSegment[] }) => setSegments((prev) => [...prev, ...segments]),
       fill: (fill: FillOp) => setSegments((prev) => [...prev, fill]),
       strokeUndone: ({ strokeId }: { strokeId: string }) =>
         setSegments((prev) => prev.filter((segment) => segment.strokeId !== strokeId)),
@@ -317,29 +319,49 @@ export default function GameRoomPage() {
   // ---- Drawer actions ------------------------------------------------------
   const canDraw = isDrawer && phase === "drawing"
 
+  // One batcher per drawing turn. Pending segments are dropped when the turn
+  // ends, never sent into the next one.
+  const batcherRef = useRef<SegmentBatcher | null>(null)
+  useEffect(() => {
+    if (!canDraw) return
+    const batcher = createSegmentBatcher((batch) => socket.emit("drawingBatch", { roomId, segments: batch }))
+    batcherRef.current = batcher
+    return () => {
+      batcher.dispose()
+      batcherRef.current = null
+    }
+  }, [canDraw, roomId])
+
+  const flushSegments = useCallback(() => batcherRef.current?.flush(), [])
+
   const handleSegment = useCallback(
     (segment: StrokeSegment) => {
       const line = { ...segment, color: strokeColor(tool, color), size: tool === "eraser" ? Math.max(brushSize, 20) : brushSize }
-      socket.emit("drawing", { ...line, roomId })
+      batcherRef.current?.push(line)
       setSegments((prev) => [...prev, line])
     },
-    [tool, color, brushSize, roomId]
+    [tool, color, brushSize]
   )
 
   const handleFill = useCallback(
     (fill: FillOp) => {
+      flushSegments() // keep the server's history in the drawer's order
       socket.emit("fill", { ...fill, roomId })
       setSegments((prev) => [...prev, fill])
     },
-    [roomId]
+    [roomId, flushSegments]
   )
 
   const undo = useCallback(() => {
-    if (canDraw) socket.emit("undoStroke", { roomId })
-  }, [canDraw, roomId])
+    if (!canDraw) return
+    flushSegments()
+    socket.emit("undoStroke", { roomId })
+  }, [canDraw, roomId, flushSegments])
 
   const clear = () => {
-    if (canDraw) socket.emit("clearCanvas", { roomId })
+    if (!canDraw) return
+    flushSegments() // otherwise a pending batch would redraw after the clear
+    socket.emit("clearCanvas", { roomId })
   }
 
   // Keyboard shortcuts for the drawer: Ctrl/Cmd+Z, B, E, [ and ].
@@ -468,7 +490,7 @@ export default function GameRoomPage() {
           </div>
 
           <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-line bg-panel-2/40 p-2">
-            <DrawingCanvas ops={segments} canDraw={canDraw} tool={tool} color={strokeColor(tool, color)} size={brushSize} onSegment={handleSegment} onFill={handleFill} />
+            <DrawingCanvas ops={segments} canDraw={canDraw} tool={tool} color={strokeColor(tool, color)} size={brushSize} onSegment={handleSegment} onFill={handleFill} onStrokeEnd={flushSegments} />
 
             {/* Word choice for the drawer */}
             <AnimatePresence>

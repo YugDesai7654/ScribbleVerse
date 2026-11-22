@@ -14,6 +14,7 @@ import {
   joinRoomSchema,
   chatMessageSchema,
   drawingSchema,
+  drawingBatchSchema,
   chooseWordSchema,
   clearCanvasSchema,
   undoStrokeSchema,
@@ -1068,6 +1069,24 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
       if (history.length >= MAX_SEGMENTS_PER_TURN) return;
       history.push(line);
       socket.to(roomId).emit('drawing', line);
+    });
+
+    socket.on('drawingBatch', async (payload) => {
+      const parsed = validate(drawingBatchSchema, payload);
+      if (!parsed) return;
+      const { roomId, segments } = parsed;
+      if (roomId !== currentRoom) return;
+      const state = gameState[roomId];
+      if (!state || !state.gameStarted || state.phase !== 'drawing' || socket.id !== state.drawingOrder[0]) return;
+      // One limiter point per batch, not per segment.
+      if (!(await isAllowed(drawingLimiter, socket.id))) return;
+      // The turn may have moved on while the limiter was pending.
+      if (gameState[roomId] !== state || state.phase !== 'drawing' || socket.id !== state.drawingOrder[0]) return;
+      const history = (strokes[roomId] ??= []);
+      const accepted = segments.slice(0, Math.max(0, MAX_SEGMENTS_PER_TURN - history.length));
+      if (accepted.length === 0) return;
+      history.push(...accepted);
+      socket.to(roomId).emit('drawingBatch', { segments: accepted });
     });
 
     socket.on('fill', async (payload) => {

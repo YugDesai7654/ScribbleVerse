@@ -16,6 +16,8 @@ interface DrawingCanvasProps {
   size: number
   onSegment: (segment: StrokeSegment) => void
   onFill: (fill: FillOp) => void
+  /** Called on pen-up so the parent can send any batched segments at once. */
+  onStrokeEnd: () => void
 }
 
 let strokeCounter = 0
@@ -26,7 +28,7 @@ const newStrokeId = () => `${Date.now().toString(36)}-${(strokeCounter++).toStri
  * same drawing renders correctly on a phone and a 4K monitor. New segments are
  * painted incrementally; a full repaint only happens on resize, undo or clear.
  */
-export default function DrawingCanvas({ ops, canDraw, tool, color, size, onSegment, onFill }: DrawingCanvasProps) {
+export default function DrawingCanvas({ ops, canDraw, tool, color, size, onSegment, onFill, onStrokeEnd }: DrawingCanvasProps) {
   const wrapperRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [box, setBox] = useState({ width: 0, height: 0 })
@@ -104,6 +106,7 @@ export default function DrawingCanvas({ ops, canDraw, tool, color, size, onSegme
 
   const handleUp = () => {
     active.current = null
+    onStrokeEnd()
   }
 
   useEffect(() => {

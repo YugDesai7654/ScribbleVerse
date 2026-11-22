@@ -5,6 +5,7 @@ import {
   joinRoomSchema,
   chatMessageSchema,
   drawingSchema,
+  drawingBatchSchema,
   chooseWordSchema,
   updateSettingsSchema,
   kickPlayerSchema,
@@ -181,5 +182,22 @@ describe('startGameSchema', () => {
   });
   it('rejects unknown keys such as a client-supplied room', () => {
     expect(validate(startGameSchema, { roomId: 'X' })).toBeNull();
+  });
+});
+
+describe('drawingBatchSchema', () => {
+  const seg = { strokeId: 's1', from: null, to: { x: 0.3, y: 0.4 }, color: '#1a2b3c', size: 6 };
+  const batch = (n: number) => ({ roomId: 'ABC123', segments: Array.from({ length: n }, () => seg) });
+
+  it('rejects an empty batch', () => {
+    expect(validate(drawingBatchSchema, batch(0))).toBeNull();
+  });
+
+  it('rejects more than 16 segments', () => {
+    expect(validate(drawingBatchSchema, batch(17))).toBeNull();
+  });
+
+  it('accepts 16 segments', () => {
+    expect(validate(drawingBatchSchema, batch(16))).not.toBeNull();
   });
 });
