@@ -6,6 +6,10 @@ import { signToken, verifyToken, AUTH_COOKIE_NAME, AUTH_COOKIE_MAX_AGE_MS } from
 import { registerSchema, loginSchema } from '../validation/authSchemas';
 
 const router = Router();
+
+// Compared against when the email doesn't exist, so a failed login takes the same
+// time either way and response timing can't reveal which emails are registered.
+const DUMMY_PASSWORD_HASH = bcrypt.hashSync('timing-equalisation-placeholder', 10);
 const isProd = process.env.NODE_ENV === 'production';
 
 // Brute-force protection on the whole auth surface, not just /login, since
@@ -67,12 +71,8 @@ router.post('/login', async (req, res) => {
 
   try {
     const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(401).json({ message: 'Invalid email or password.' });
-    }
-
-    const valid = await bcrypt.compare(password, user.passwordHash);
-    if (!valid) {
+    const valid = await bcrypt.compare(password, user?.passwordHash ?? DUMMY_PASSWORD_HASH);
+    if (!user || !valid) {
       return res.status(401).json({ message: 'Invalid email or password.' });
     }
 
@@ -86,7 +86,12 @@ router.post('/login', async (req, res) => {
 });
 
 router.post('/logout', (_req, res) => {
-  res.clearCookie(AUTH_COOKIE_NAME);
+  // Must repeat the attributes used when setting the cookie, or browsers keep it.
+  res.clearCookie(AUTH_COOKIE_NAME, {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? 'none' : 'lax',
+  });
   res.json({ message: 'Logged out.' });
 });
 

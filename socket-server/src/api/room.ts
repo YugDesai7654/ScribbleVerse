@@ -1,13 +1,19 @@
 import { Room } from '../model/room';
 
+export type RoomSettings = {
+  rounds: number;
+  timePerRound: number;
+  maxPlayers: number;
+};
+
 // Host creates a room
-export async function createRoom(roomId: string, hostName: string) {
+export async function createRoom(roomId: string, hostName: string, settings: RoomSettings) {
   // Check if room already exists
   const existing = await Room.findOne({ roomId });
   if (existing) {
     throw new Error('Room already exists');
   }
-  const room = new Room({ roomId, hostName });
+  const room = new Room({ roomId, hostName, ...settings });
   await room.save();
   return room;
 }

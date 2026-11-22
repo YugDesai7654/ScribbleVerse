@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Socket as ClientSocket } from 'socket.io-client';
 import { startTestServer, connectClient, waitForEvent } from './testUtils';
 import { signToken } from '../auth/jwt';
+import { joinRoom as joinRoomRecord } from '../api/room';
+import { io as ioClient } from 'socket.io-client';
 
 const updateUserStats = vi.hoisted(() => vi.fn(async () => ({ id: 'authenticated-user' })));
 const createGameResult = vi.hoisted(() => vi.fn(async () => ({ id: 'game-result' })));
@@ -22,11 +24,11 @@ vi.mock('../model/gameResult', () => ({
 }));
 
 vi.mock('../api/room', () => {
-  const store = new Map<string, { roomId: string; hostName: string }>();
+  const store = new Map<string, { roomId: string; hostName: string; [key: string]: unknown }>();
   return {
-    createRoom: vi.fn(async (roomId: string, hostName: string) => {
+    createRoom: vi.fn(async (roomId: string, hostName: string, settings: Record<string, number>) => {
       if (store.has(roomId)) throw new Error('Room already exists');
-      const room = { roomId, hostName };
+      const room = { roomId, hostName, ...settings };
       store.set(roomId, room);
       return room;
     }),
@@ -233,5 +235,204 @@ describe('game flow (Socket.IO integration)', () => {
     const updatedList = await playerListPromise;
     expect(updatedList.hostName).toBe('Bob');
     expect(updatedList.players.map((p) => p.name)).toEqual(['Bob']);
+  });
+
+  // ------------------------------------------------------------------
+  // Regression tests for turn-lifecycle and security fixes
+  // ------------------------------------------------------------------
+
+  /** Creates a room and joins every named player; resolves once all have joined. */
+  async function setupRoom(names: string[], settings: Record<string, number> = { rounds: 1, timePerRound: 30 }) {
+    const roomId = uniqueRoomId();
+    const sockets: ClientSocket[] = [];
+    for (const _ of names) sockets.push(await join(testServer.url));
+    sockets[0].emit('createRoom', { roomId, name: names[0], ...settings });
+    await waitForEvent(sockets[0], 'createRoomSuccess');
+    for (let i = 0; i < names.length; i++) {
+      const joined = waitForEvent(sockets[i], 'joinRoomSuccess');
+      sockets[i].emit('joinRoom', { roomId, name: names[i] });
+      await joined;
+    }
+    const players = names.map((name, i) => ({ name, socket: sockets[i] }));
+    return { roomId, players };
+  }
+
+  /** Starts the game and resolves with the first drawer and the word options they got. */
+  async function startAndGetDrawer(players: { name: string; socket: ClientSocket }[]) {
+    const optionPromises = players.map((p) =>
+      waitForEvent<{ options: string[] }>(p.socket, 'wordOptions').then((data) => ({ player: p, options: data.options }))
+    );
+    players[0].socket.emit('startGame');
+    const { player, options } = await Promise.race(optionPromises);
+    return { drawer: player, options, others: players.filter((p) => p !== player) };
+  }
+
+  function collect<T = any>(socket: ClientSocket, event: string): T[] {
+    const seen: T[] = [];
+    socket.on(event, (data: T) => seen.push(data));
+    return seen;
+  }
+
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  function dropClient(socket: ClientSocket) {
+    socket.disconnect();
+    clients.splice(clients.indexOf(socket), 1);
+  }
+
+  it('does not award points for guessing a word after it has been revealed', async () => {
+    const { roomId, players } = await setupRoom(['Alice', 'Bob', 'Cara']);
+    const { drawer, options, others } = await startAndGetDrawer(players);
+
+    const word = options[0];
+    const started = waitForEvent(others[0].socket, 'roundStart');
+    drawer.socket.emit('chooseWord', { roomId, word });
+    await started;
+
+    // The drawer leaving ends the turn and broadcasts "The word was: <word>".
+    const revealed = waitForEvent<{ text: string }>(others[0].socket, 'chatMessage');
+    const nextOptions = others.map((p) => waitForEvent(p.socket, 'wordOptions'));
+    const correct = collect<{ correct?: boolean }>(others[0].socket, 'chatMessage');
+    dropClient(drawer.socket);
+    await revealed;
+
+    // Both remaining players now "guess" the revealed word during the intermission.
+    for (const p of others) p.socket.emit('chatMessage', { roomId, user: p.name, text: word });
+    await sleep(300);
+    expect(correct.some((m) => m.correct)).toBe(false);
+
+    // ...and the next turn still starts normally instead of being skipped.
+    await Promise.race(nextOptions);
+  });
+
+  it('keeps the game moving when a non-drawing player leaves mid-game', async () => {
+    const { roomId, players } = await setupRoom(['Alice', 'Bob', 'Cara']);
+    const { drawer, options, others } = await startAndGetDrawer(players);
+    const [leaver, stayer] = others;
+
+    const started = waitForEvent(stayer.socket, 'roundStart');
+    drawer.socket.emit('chooseWord', { roomId, word: options[0] });
+    await started;
+
+    const leaverId = leaver.socket.id;
+    dropClient(leaver.socket);
+    await sleep(100);
+
+    const turns = collect<{ drawerId: string }>(drawer.socket, 'drawingTurn');
+    const nextOptions = waitForEvent<{ options: string[] }>(stayer.socket, 'wordOptions');
+    stayer.socket.emit('chatMessage', { roomId, user: stayer.name, text: options[0] });
+
+    // The only player left to draw is `stayer`; the departed player is skipped.
+    const { options: nextWords } = await nextOptions;
+    expect(turns.map((t) => t.drawerId)).not.toContain(leaverId);
+
+    const gameOver = waitForEvent<{ scores: unknown[] }>(drawer.socket, 'gameOver');
+    const live = waitForEvent(drawer.socket, 'roundStart');
+    stayer.socket.emit('chooseWord', { roomId, word: nextWords[0] });
+    await live;
+    drawer.socket.emit('chatMessage', { roomId, user: drawer.name, text: nextWords[0] });
+    expect((await gameOver).scores.length).toBeGreaterThan(0);
+  });
+
+  it("does not let a departed drawer's word auto-pick fire into the next turn", async () => {
+    const { roomId, players } = await setupRoom(['Alice', 'Bob', 'Cara']);
+    const { drawer, others } = await startAndGetDrawer(players);
+
+    // Drawer leaves while still choosing — their 10s auto-pick timer is pending.
+    const nextTurn = Promise.race(
+      others.map((p) => waitForEvent<{ options: string[] }>(p.socket, 'wordOptions').then((d) => ({ p, options: d.options })))
+    );
+    dropClient(drawer.socket);
+    const { p: nextDrawer, options } = await nextTurn; // ~5s later
+
+    const roundStarts = collect<{ isDrawer: boolean; word: string }>(nextDrawer.socket, 'roundStart');
+    await sleep(6000); // past the old drawer's 10s auto-pick deadline
+    expect(roundStarts).toEqual([]);
+
+    const mine = waitForEvent<{ isDrawer: boolean; word: string }>(nextDrawer.socket, 'roundStart');
+    nextDrawer.socket.emit('chooseWord', { roomId, word: options[1] });
+    expect(await mine).toMatchObject({ isDrawer: true, word: options[1] });
+  }, 25000);
+
+  it('rejects reserved names that could impersonate system messages', async () => {
+    const socket = await join(testServer.url);
+    const createError = waitForEvent(socket, 'createRoomError');
+    socket.emit('createRoom', { roomId: uniqueRoomId(), name: 'System' });
+    await createError;
+
+    const { roomId } = await setupRoom(['Host']);
+    const impostor = await join(testServer.url);
+    const joinError = waitForEvent(impostor, 'joinError');
+    impostor.emit('joinRoom', { roomId, name: ' system ' });
+    await joinError;
+  });
+
+  it('refuses WebSocket connections from a foreign Origin', async () => {
+    const attempt = ioClient(testServer.url, {
+      transports: ['websocket'],
+      forceNew: true,
+      reconnection: false,
+      extraHeaders: { Origin: 'https://evil.example' },
+    });
+    try {
+      await expect(new Promise((resolve, reject) => {
+        attempt.once('connect', () => resolve('connected'));
+        attempt.once('connect_error', reject);
+      })).rejects.toBeTruthy();
+    } finally {
+      attempt.close();
+    }
+
+    const allowed = await connectClient(testServer.url);
+    clients.push(allowed);
+    expect(allowed.connected).toBe(true);
+  });
+
+  it('lets players resume and start a game in a room that previously emptied', async () => {
+    const { roomId, players } = await setupRoom(['Alice']);
+    dropClient(players[0].socket);
+    await sleep(100);
+
+    const bob = await join(testServer.url);
+    const cara = await join(testServer.url);
+    const bobList = waitForEvent<{ hostName: string }>(bob, 'playerList');
+    bob.emit('joinRoom', { roomId, name: 'Bob' });
+    expect((await bobList).hostName).toBe('Bob');
+
+    const caraJoined = waitForEvent(cara, 'joinRoomSuccess');
+    cara.emit('joinRoom', { roomId, name: 'Cara' });
+    await caraJoined;
+
+    const started = waitForEvent(cara, 'gameStarted');
+    bob.emit('startGame');
+    await started;
+  });
+
+  it('reports a start-game failure instead of crashing when the database errors', async () => {
+    const { players } = await setupRoom(['Alice', 'Bob']);
+    vi.mocked(joinRoomRecord).mockRejectedValueOnce(new Error('db down'));
+
+    const failure = waitForEvent<{ message: string }>(players[0].socket, 'startGameError');
+    players[0].socket.emit('startGame');
+    expect((await failure).message).toMatch(/could not start/i);
+  });
+
+  it('uses the logged-in account name as host even if the form sent another name', async () => {
+    const token = signToken({ userId: 'dana-user-id', displayName: 'Dana' });
+    const dana = await join(testServer.url, `token=${token}`);
+    const eli = await join(testServer.url);
+    const roomId = uniqueRoomId();
+
+    dana.emit('createRoom', { roomId, name: 'SomethingElse' });
+    await waitForEvent(dana, 'createRoomSuccess');
+    for (const [socket, name] of [[dana, 'ignored'], [eli, 'Eli']] as const) {
+      const joined = waitForEvent(socket, 'joinRoomSuccess');
+      socket.emit('joinRoom', { roomId, name });
+      await joined;
+    }
+
+    const started = waitForEvent(eli, 'gameStarted');
+    dana.emit('startGame');
+    await started;
   });
 });

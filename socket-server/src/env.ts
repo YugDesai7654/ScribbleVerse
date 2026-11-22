@@ -15,6 +15,7 @@ const environmentSchema = z.object({
     ),
   CORS_ORIGIN: z.string().url('CORS_ORIGIN must be a valid URL').optional(),
   JWT_SECRET: z.string().optional(),
+  TRUST_PROXY: z.string().optional(),
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
     .optional(),
@@ -50,6 +51,7 @@ export type RuntimeEnvironment = {
   MONGO_URI: string;
   CORS_ORIGIN: string;
   JWT_SECRET?: string;
+  TRUST_PROXY?: string;
   LOG_LEVEL?: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace' | 'silent';
 };
 
