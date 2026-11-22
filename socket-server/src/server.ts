@@ -2,6 +2,7 @@ import express from 'express';
 import http from 'http';
 import { randomUUID } from 'node:crypto';
 import cors from 'cors';
+import proxyaddr from 'proxy-addr';
 import cookieParser from 'cookie-parser';
 import { parse as parseCookie } from 'cookie';
 import rateLimit from 'express-rate-limit';
@@ -248,14 +249,13 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
     next();
   });
 
-  /** Client IP for rate limiting, honouring X-Forwarded-For only when a proxy is trusted. */
+  /**
+   * Client IP for rate limiting. Uses the same trust rules as Express, so an
+   * X-Forwarded-For value is only believed up to the proxies we trust; without a
+   * trusted proxy this is the peer address.
+   */
   function clientAddress(socket: Socket): string {
-    if (trustProxy) {
-      const forwarded = socket.handshake.headers['x-forwarded-for'];
-      const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0]?.trim();
-      if (first) return first;
-    }
-    return socket.handshake.address;
+    return proxyaddr(socket.request, app.get('trust proxy fn'));
   }
 
   // ====================================================================
@@ -849,11 +849,6 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
         socket.emit('joinError', { message: 'Already in a room.' });
         return;
       }
-      if (!(await isAllowed(roomActionLimiter, clientAddress(socket)))) {
-        socket.emit('joinError', { message: 'Too many requests. Please slow down.' });
-        return;
-      }
-
       // A logged-in user's account display name always wins over whatever name
       // string the client sends — prevents a logged-in player from spoofing a
       // different in-game name than their account, and means the client doesn't
@@ -871,6 +866,13 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
           currentRoom = roomId;
           playerName = seat.name;
           await rejoinSeat(roomId, seat);
+          return;
+        }
+
+        // Held seats reclaim above without spending the per-IP join budget, so a
+        // flaky connection can't lock a player out of their own seat.
+        if (!(await isAllowed(roomActionLimiter, clientAddress(socket)))) {
+          socket.emit('joinError', { message: 'Too many requests. Please slow down.' });
           return;
         }
 
@@ -1043,11 +1045,12 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
       socket.to(roomId).emit('fill', op);
     });
 
-    socket.on('undoStroke', (payload) => {
+    socket.on('undoStroke', async (payload) => {
       const data = validate(undoStrokeSchema, payload);
       if (!data || data.roomId !== currentRoom) return;
       const state = gameState[data.roomId];
       if (!state || !state.gameStarted || state.phase !== 'drawing' || socket.id !== state.drawingOrder[0]) return;
+      if (!(await isAllowed(drawingLimiter, socket.id))) return;
 
       const history = strokes[data.roomId];
       const last = history?.[history.length - 1];
@@ -1056,19 +1059,20 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
       io.to(data.roomId).emit('strokeUndone', { strokeId: last.strokeId });
     });
 
-    socket.on('clearCanvas', (payload) => {
+    socket.on('clearCanvas', async (payload) => {
       const data = validate(clearCanvasSchema, payload);
       if (!data) return;
       const { roomId } = data;
       if (roomId !== currentRoom) return;
       const state = gameState[roomId];
       if (state && state.gameStarted && state.phase === 'drawing' && socket.id === state.drawingOrder[0]) {
+          if (!(await isAllowed(drawingLimiter, socket.id))) return;
           strokes[roomId] = [];
           io.to(roomId).emit('canvasCleared');
       }
     });
 
-    socket.on('chooseWord', (payload) => {
+    socket.on('chooseWord', async (payload) => {
       const data = validate(chooseWordSchema, payload);
       if (!data) return;
       const roomId = currentRoom;
@@ -1079,6 +1083,9 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
 
       const offeredOptions = wordState[roomId]?.wordOptions;
       if (!offeredOptions || !offeredOptions.includes(data.word)) return;
+      if (!(await isAllowed(drawingLimiter, socket.id))) return;
+      // The turn may have moved on while the limiter was pending.
+      if (gameState[roomId] !== state || state.phase !== 'choosing' || wordState[roomId]?.wordOptions !== offeredOptions) return;
 
       handleWordChosen(roomId, data.word);
     });

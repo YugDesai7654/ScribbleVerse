@@ -495,6 +495,57 @@ describe('game flow (Socket.IO integration)', () => {
     expect(vi.mocked(joinRoomRecord).mock.calls.length).toBeLessThanOrEqual(10);
   });
 
+  it('keys the join limit on the address the trusted proxy saw', async () => {
+    const previous = process.env.TRUST_PROXY;
+    process.env.TRUST_PROXY = '1';
+    await testServer.close();
+    try {
+      testServer = await startTestServer({ reconnectGraceMs: GRACE_MS });
+      const results: string[] = [];
+      for (let i = 0; i < 11; i++) {
+        const socket = await connectClient(testServer.url, undefined, {
+          'X-Forwarded-For': `${Math.random().toString(36).slice(2)}, 10.0.0.9`,
+        });
+        clients.push(socket);
+        const failed = waitForEvent<{ message: string }>(socket, 'joinError');
+        socket.emit('joinRoom', { roomId: 'ZZZZ', name: `P${i}` });
+        results.push((await failed).message);
+      }
+      expect(results[10]).toBe('Too many requests. Please slow down.');
+      expect(results[9]).not.toBe('Too many requests. Please slow down.');
+    } finally {
+      if (previous === undefined) delete process.env.TRUST_PROXY;
+      else process.env.TRUST_PROXY = previous;
+    }
+  });
+
+  it('lets a held seat rejoin even when the IP is over the join limit', async () => {
+    const { roomId, others } = await liveTurn(); // uses 4 points
+    const spammer = await join(testServer.url);
+    for (let i = 0; i < 6; i++) {
+      const failed = waitForEvent(spammer, 'joinError');
+      spammer.emit('joinRoom', { roomId: 'ZZZZ', name: 'Spam' });
+      await failed;
+    }
+    const limited = waitForEvent<{ message: string }>(spammer, 'joinError');
+    spammer.emit('joinRoom', { roomId: 'ZZZZ', name: 'Spam' });
+    expect((await limited).message).toBe('Too many requests. Please slow down.');
+
+    const token = (others[0] as { token?: string }).token as string;
+    dropNetwork(others[0].socket);
+    const { joined } = await rejoin(roomId, others[0].name, token);
+    expect(joined.rejoined).toBe(true);
+  });
+
+  it('rate-limits clearCanvas', async () => {
+    const { roomId, drawer, others } = await liveTurn();
+    const cleared = collect(others[0].socket, 'canvasCleared');
+    for (let i = 0; i < 100; i++) drawer.socket.emit('clearCanvas', { roomId });
+    await sleep(300);
+    expect(cleared.length).toBeGreaterThan(0);
+    expect(cleared.length).toBeLessThanOrEqual(60);
+  });
+
   it('records a logged-in leaver as played, not won', async () => {
     const names = ['Alice', 'Bob', 'Cara'];
     const sockets: ClientSocket[] = [];

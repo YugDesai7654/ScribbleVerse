@@ -29,12 +29,16 @@ export async function startTestServer(options?: AppOptions) {
 }
 
 /** Connects a real socket.io-client to the given server URL and resolves once connected. */
-export function connectClient(url: string, cookie?: string): Promise<ClientSocket> {
+export function connectClient(
+  url: string,
+  cookie?: string,
+  headers?: Record<string, string>
+): Promise<ClientSocket> {
   return new Promise((resolve, reject) => {
     const socket = ioClient(url, {
       transports: ['websocket'],
       forceNew: true,
-      extraHeaders: cookie ? { Cookie: cookie } : undefined,
+      extraHeaders: cookie || headers ? { ...(cookie ? { Cookie: cookie } : {}), ...headers } : undefined,
     });
     socket.once('connect', () => resolve(socket));
     socket.once('connect_error', (err) => reject(err));
