@@ -132,8 +132,6 @@ describe('GET /auth/me/history', () => {
 describe('GET /users/:displayName', () => {
   it('shows a public profile without private fields, matching the name case-insensitively', async () => {
     const alice = await seedUser('Alice', at('2026-02-01T00:00:00Z'));
-    // A newer account with the same name must not shadow the original.
-    await seedUser('alice', at('2026-06-01T00:00:00Z'));
     for (let i = 0; i < 12; i += 1) {
       await seedGame(alice._id, 'Alice', 50 + i, i === 0, at(`2026-11-${String(i + 1).padStart(2, '0')}T08:00:00Z`));
     }

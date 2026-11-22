@@ -13,8 +13,8 @@ export const PUBLIC_RECENT_GAMES = 10;
 
 /**
  * Public, read-only profile. Never includes the email or user ID. Display
- * names aren't unique, so this matches case-insensitively and shows the
- * oldest account with that name.
+ * names are unique ignoring case, so the lookup matches case-insensitively
+ * (same collation as the index).
  */
 router.get('/:displayName', async (req, res) => {
   const parsed = profileParamsSchema.safeParse(req.params);
@@ -25,7 +25,6 @@ router.get('/:displayName', async (req, res) => {
   try {
     const user = await User.findOne({ displayName: parsed.data.displayName })
       .collation({ locale: 'en', strength: 2 })
-      .sort({ createdAt: 1, _id: 1 })
       .select('displayName createdAt')
       .lean<{ _id: unknown; displayName: string; createdAt: Date }>();
     if (!user) {

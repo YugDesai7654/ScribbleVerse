@@ -10,6 +10,7 @@ import { gameHistory, profileStats } from '../stats/playerStats';
 import { logger } from '../logger';
 
 const router = Router();
+const DISPLAY_NAME_TAKEN = 'That display name is taken.';
 
 // Compared against when the email doesn't exist, so a failed login takes the same
 // time either way and response timing can't reveal which emails are registered.
@@ -56,6 +57,11 @@ router.post('/register', authLimiter, async (req, res) => {
       return res.status(409).json({ message: 'An account with that email already exists.' });
     }
 
+    const nameTaken = await User.findOne({ displayName }).collation({ locale: 'en', strength: 2 });
+    if (nameTaken) {
+      return res.status(409).json({ message: DISPLAY_NAME_TAKEN });
+    }
+
     const passwordHash = await bcrypt.hash(password, 10);
     const user = await User.create({ email, passwordHash, displayName });
 
@@ -63,7 +69,14 @@ router.post('/register', authLimiter, async (req, res) => {
     setAuthCookie(res, token);
 
     res.status(201).json({ user: publicUser(user) });
-  } catch (err) {
+  } catch (err: any) {
+    // Two registrations can race past the checks above; the unique indexes decide.
+    if (err?.code === 11000) {
+      if (err.keyPattern?.displayName || /displayName/.test(err.message ?? '')) {
+        return res.status(409).json({ message: DISPLAY_NAME_TAKEN });
+      }
+      return res.status(409).json({ message: 'An account with that email already exists.' });
+    }
     res.status(500).json({ message: 'Registration failed. Please try again.' });
   }
 });

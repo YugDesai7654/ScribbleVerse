@@ -71,9 +71,21 @@ vi.mock('../model/user', () => {
       users.set(id, stored);
       return stored;
     },
-    findOne: vi.fn(async ({ email }: { email: string }) =>
-      [...users.values()].find((user) => user.email === email) || null
-    ),
+    findOne: vi.fn((filter: { email?: string; displayName?: string }) => {
+      const match = () =>
+        [...users.values()].find((user) =>
+          filter.displayName !== undefined
+            ? user.displayName.toLowerCase() === filter.displayName.toLowerCase()
+            : user.email === filter.email
+        ) || null;
+      // Awaitable, and also chainable with .collation() like a Mongoose query.
+      const query = {
+        collation: () => query,
+        then: (resolve: (value: StoredUser | null) => unknown, reject?: (reason: unknown) => unknown) =>
+          Promise.resolve(match()).then(resolve, reject),
+      };
+      return query;
+    }),
     create: vi.fn(async (data: Pick<StoredUser, 'email' | 'passwordHash' | 'displayName'>) =>
       repository.__seed({
         ...data,
@@ -190,6 +202,24 @@ describe('authentication HTTP API', () => {
 
   afterEach(async () => {
     await testServer.close();
+  });
+
+  it('refuses a display name that differs from an existing one only by case', async () => {
+    users.__seed({
+      email: 'alice@example.com',
+      passwordHash: 'x',
+      displayName: 'Alice',
+      totalScore: 0,
+      gamesPlayed: 0,
+      gamesWon: 0,
+    });
+    const response = await fetch(`${testServer.url}/auth/register`, jsonRequest('POST', {
+      email: 'other@example.com',
+      password: 'correct-horse-battery-staple',
+      displayName: 'alice',
+    }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ message: 'That display name is taken.' });
   });
 
   it('registers, persists identity through the cookie, and logs out', async () => {
