@@ -6,7 +6,10 @@ import {
   chatMessageSchema,
   drawingSchema,
   chooseWordSchema,
+  updateSettingsSchema,
+  kickPlayerSchema,
 } from '../validation/schemas';
+import { CATEGORIES } from '../game/words';
 
 describe('createRoomSchema', () => {
   it('accepts a minimal valid payload and fills in defaults', () => {
@@ -102,5 +105,62 @@ describe('chooseWordSchema', () => {
 
   it('rejects a non-positive round number', () => {
     expect(validate(chooseWordSchema, { roomId: 'ABC123', word: 'cat', round: 0 })).toBeNull();
+  });
+});
+
+describe('updateSettingsSchema', () => {
+  const base = { roomId: 'ABC123' };
+
+  it('accepts a partial update of a single setting', () => {
+    expect(validate(updateSettingsSchema, { ...base, rounds: 4 })).toEqual({ ...base, rounds: 4 });
+  });
+
+  it('accepts every category and rejects unknown ones', () => {
+    for (const category of CATEGORIES) {
+      expect(validate(updateSettingsSchema, { ...base, category })).toEqual({ ...base, category });
+    }
+    expect(validate(updateSettingsSchema, { ...base, category: 'dinosaurs' })).toBeNull();
+  });
+
+  it('splits, trims, lowercases and de-duplicates custom words', () => {
+    expect(validate(updateSettingsSchema, { ...base, customWords: ' Rocket  Ship, comet,,rocket ship ' })).toEqual({
+      ...base,
+      customWords: ['rocket ship', 'comet'],
+    });
+  });
+
+  it('treats an empty textarea as no custom words', () => {
+    expect(validate(updateSettingsSchema, { ...base, customWords: '' })).toEqual({ ...base, customWords: [] });
+  });
+
+  it('rejects custom words outside 2–30 characters or with symbols', () => {
+    expect(validate(updateSettingsSchema, { ...base, customWords: 'ok, x' })).toBeNull();
+    expect(validate(updateSettingsSchema, { ...base, customWords: 'a'.repeat(31) })).toBeNull();
+    expect(validate(updateSettingsSchema, { ...base, customWords: 'hello<script>' })).toBeNull();
+  });
+
+  it('rejects more than 200 custom words', () => {
+    const words = (n: number) =>
+      Array.from({ length: n }, (_, i) => `w${i.toString(26).replace(/\d/g, (d) => 'qrstuvwxyz'[Number(d)])}`).join(',');
+    expect(validate(updateSettingsSchema, { ...base, customWords: words(200) })).not.toBeNull();
+    expect(validate(updateSettingsSchema, { ...base, customWords: words(201) })).toBeNull();
+  });
+
+  it('rejects out-of-range numeric settings', () => {
+    expect(validate(updateSettingsSchema, { ...base, rounds: 0 })).toBeNull();
+    expect(validate(updateSettingsSchema, { ...base, timePerRound: 500 })).toBeNull();
+    expect(validate(updateSettingsSchema, { ...base, maxPlayers: 1 })).toBeNull();
+  });
+});
+
+describe('kickPlayerSchema and reconnect token', () => {
+  it('requires a target player ID', () => {
+    expect(validate(kickPlayerSchema, { roomId: 'ABC123', playerId: 'abc' })).not.toBeNull();
+    expect(validate(kickPlayerSchema, { roomId: 'ABC123' })).toBeNull();
+  });
+
+  it('accepts an optional reconnect token on join', () => {
+    expect(validate(joinRoomSchema, { roomId: 'ABC123', name: 'Al', reconnectToken: 'tok' })).toMatchObject({ reconnectToken: 'tok' });
+    expect(validate(joinRoomSchema, { roomId: 'ABC123', name: 'Al', reconnectToken: 'x'.repeat(65) })).toBeNull();
   });
 });

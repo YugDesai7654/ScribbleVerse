@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from "framer-motion"
 import { LogOut, MessageCircle, Users, Volume2, VolumeX } from "lucide-react"
 import socket from "../socket"
 import { useAuth } from "../contexts/useAuth"
-import type { ChatMessage, Player, Score, StrokeSegment, TurnSummary } from "../game/types"
+import type { ChatMessage, Player, RoomSettings, Score, SettingsChange, StrokeSegment, SyncState, TurnSummary } from "../game/types"
 import { BRUSH_SIZES, PALETTE } from "../game/types"
 import { isMuted, play, setMuted } from "../game/sound"
 import DrawingCanvas from "./game/DrawingCanvas"
@@ -17,7 +17,29 @@ import ChatPanel from "./game/ChatPanel"
 import Confetti from "./game/Confetti"
 import { ToastViewport } from "./game/Toasts"
 import { useToasts } from "../game/useToasts"
-import { CountdownOverlay, GameOverOverlay, InviteCode, LobbyPanel, TurnSummaryOverlay } from "./game/Overlays"
+import { CountdownOverlay, GameOverOverlay, InviteCode, LobbyPanel, ReconnectingOverlay, TurnSummaryOverlay } from "./game/Overlays"
+
+/**
+ * The seat's reconnect token lives in sessionStorage: it survives a refresh of
+ * this tab but isn't shared with other tabs. Storage can throw (private mode,
+ * blocked site data), in which case reconnecting just isn't available.
+ */
+const tokenKey = (roomId: string) => `scribbleverse:reconnect:${roomId}`
+function readToken(roomId: string) {
+  try {
+    return sessionStorage.getItem(tokenKey(roomId)) || undefined
+  } catch {
+    return undefined
+  }
+}
+function writeToken(roomId: string, token: string | null) {
+  try {
+    if (token) sessionStorage.setItem(tokenKey(roomId), token)
+    else sessionStorage.removeItem(tokenKey(roomId))
+  } catch {
+    // Storage unavailable: nothing to persist.
+  }
+}
 
 /** What the room is doing right now, from this client's point of view. */
 type Phase = "lobby" | "choosing" | "drawing" | "summary" | "over"
@@ -53,6 +75,8 @@ export default function GameRoomPage() {
   const [confettiKey, setConfettiKey] = useState(0)
   const [muted, setMutedState] = useState(isMuted)
   const [mobileTab, setMobileTab] = useState<"chat" | "players">("chat")
+  const [settings, setSettings] = useState<RoomSettings | null>(null)
+  const [connection, setConnection] = useState<"online" | "reconnecting" | "failed">("online")
 
   const [tool, setTool] = useState<Tool>("brush")
   const [color, setColor] = useState<string>(PALETTE[0])
@@ -77,9 +101,9 @@ export default function GameRoomPage() {
   useEffect(() => {
     if (authLoading || !roomId || !name) return
 
-    const startTimer = () => {
+    const startTimer = (seconds = timePerRoundRef.current) => {
       stopTimer()
-      setTimer(timePerRoundRef.current)
+      setTimer(seconds)
       timerRef.current = window.setInterval(() => {
         setTimer((t) => {
           if (t <= 1) {
@@ -93,13 +117,61 @@ export default function GameRoomPage() {
     }
 
     const handlers: Record<string, (...args: never[]) => void> = {
+      // Fires on the first connect and after every automatic reconnect. The
+      // token lets the server hand back our seat instead of treating us as new.
       connect: () => {
         setSocketId(socket.id || "")
-        socket.emit("joinRoom", { roomId, name })
+        socket.emit("joinRoom", { roomId, name, reconnectToken: readToken(roomId) })
+      },
+      disconnect: (reason: string) => {
+        // Leaving or being kicked is deliberate; anything else is a dropped connection.
+        if (reason !== "io client disconnect" && reason !== "io server disconnect") setConnection("reconnecting")
+      },
+      joinRoomSuccess: (data: { reconnectToken?: string }) => {
+        if (data.reconnectToken) writeToken(roomId, data.reconnectToken)
+        setConnection("online")
       },
       joinError: (data: { message: string }) => {
+        writeToken(roomId, null)
         socket.disconnect()
         navigate("/room", { state: { roomCode: roomId, error: data.message } })
+      },
+      kicked: (data: { message: string }) => {
+        writeToken(roomId, null)
+        socket.disconnect()
+        navigate("/room", { state: { error: data.message } })
+      },
+      settingsUpdated: (next: RoomSettings) => setSettings(next),
+      settingsError: (data: { message: string }) => toast(data.message, "error"),
+      syncState: (state: SyncState) => {
+        stopTimer()
+        setTotalRounds(state.totalRounds)
+        setTimePerRound(state.timePerRound)
+        timePerRoundRef.current = state.timePerRound
+        setRound(state.round)
+        setDrawerId(state.drawerId)
+        pointsRef.current = state.scores
+        setPoints(state.scores)
+        setGuessed(new Set(state.guessed))
+        setSegments(state.strokes)
+        setMessages(state.chat)
+        setCountdown(null)
+        setSummary(null)
+        setGameOver(null)
+        setWordOptions(state.wordOptions)
+        setWordPattern("")
+        if (state.phase === "choosing") {
+          setTimer(state.timeLeft)
+          setPhase("choosing")
+        } else if (state.phase === "drawing" && state.word) {
+          setWordPattern(state.isDrawer ? state.word.split("").join(" ") : state.word)
+          setPhase("drawing")
+          startTimer(state.timeLeft)
+        } else if (state.phase === "intermission") {
+          setPhase("summary")
+        } else {
+          setPhase("lobby")
+        }
       },
       playerList: (data: { players: Player[]; hostName: string }) => {
         setPlayers(data.players)
@@ -204,11 +276,19 @@ export default function GameRoomPage() {
       },
     }
 
+    // Manager-level events: Socket.IO retries on its own; these just drive the overlay.
+    const onReconnectAttempt = () => setConnection("reconnecting")
+    const onReconnectFailed = () => setConnection("failed")
+
     for (const [event, handler] of Object.entries(handlers)) socket.on(event, handler as (...args: unknown[]) => void)
+    socket.io.on("reconnect_attempt", onReconnectAttempt)
+    socket.io.on("reconnect_failed", onReconnectFailed)
     socket.connect()
 
     return () => {
       for (const [event, handler] of Object.entries(handlers)) socket.off(event, handler as (...args: unknown[]) => void)
+      socket.io.off("reconnect_attempt", onReconnectAttempt)
+      socket.io.off("reconnect_failed", onReconnectFailed)
       socket.disconnect()
       stopTimer()
     }
@@ -263,8 +343,15 @@ export default function GameRoomPage() {
 
   const sendChat = (text: string) => socket.emit("chatMessage", { roomId, user: name, text })
   const startGame = () => socket.emit("startGame")
+  const changeSettings = (change: SettingsChange) => socket.emit("updateSettings", { roomId, ...change })
+  const kick = (playerId: string) => socket.emit("kickPlayer", { roomId, playerId })
+  const retryConnection = () => {
+    setConnection("reconnecting")
+    socket.connect()
+  }
   const leave = () => {
     socket.disconnect()
+    if (roomId) writeToken(roomId, null)
     localStorage.removeItem("roomId")
     navigate("/room")
   }
@@ -386,6 +473,10 @@ export default function GameRoomPage() {
                   players={players}
                   isHost={isHost}
                   hostName={hostName}
+                  selfId={socketId}
+                  settings={settings}
+                  onSettingsChange={changeSettings}
+                  onKick={kick}
                   onStart={startGame}
                   onCopied={(t) => toast(t, "success")}
                 />
@@ -437,6 +528,9 @@ export default function GameRoomPage() {
         </aside>
       </div>
 
+      <AnimatePresence>
+        {connection !== "online" && <ReconnectingOverlay failed={connection === "failed"} onRetry={retryConnection} onLeave={leave} />}
+      </AnimatePresence>
       <AnimatePresence>
         {countdown !== null && phase !== "over" && <CountdownOverlay seconds={countdown} />}
         {phase === "over" && gameOver && (

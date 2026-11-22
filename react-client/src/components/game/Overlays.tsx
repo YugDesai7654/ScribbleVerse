@@ -1,7 +1,7 @@
 import { motion } from "framer-motion"
-import { Check, Copy, Crown, LogOut, RotateCcw, Trophy } from "lucide-react"
-import { useState, type ReactNode } from "react"
-import type { Player, Score, TurnSummary } from "../../game/types"
+import { Check, Copy, Crown, LogOut, RotateCcw, Trophy, WifiOff, X } from "lucide-react"
+import { useEffect, useState, type ReactNode } from "react"
+import { CATEGORIES, type Category, type Player, type RoomSettings, type Score, type SettingsChange, type TurnSummary } from "../../game/types"
 import { avatarColor } from "../../game/utils"
 
 const backdrop = "absolute inset-0 z-40 flex items-center justify-center bg-black/65 p-4 backdrop-blur-[2px]"
@@ -40,19 +40,135 @@ export function InviteCode({ roomId, onCopied }: { roomId: string; onCopied: (te
   )
 }
 
+const ROUND_OPTIONS = Array.from({ length: 10 }, (_, i) => i + 1)
+const TIME_OPTIONS = [30, 45, 60, 80, 90, 120, 150, 180, 240, 300]
+const PLAYER_OPTIONS = Array.from({ length: 11 }, (_, i) => i + 2)
+const MAX_CUSTOM_WORDS = 200
+
+const fieldLabel = "text-xs font-semibold uppercase tracking-wider text-cream/50"
+const selectClass =
+  "mt-1 w-full rounded-lg border border-line bg-panel-2 px-2.5 py-2 text-sm text-cream capitalize focus:border-gold focus:outline-none"
+
+/** Keeps the current value selectable even if it isn't one of the preset choices. */
+function withCurrent(options: number[], current: number) {
+  return options.includes(current) ? options : [...options, current].sort((a, b) => a - b)
+}
+
+function countWords(text: string) {
+  return new Set(text.split(",").map((w) => w.trim().toLowerCase()).filter(Boolean)).size
+}
+
+function LobbySettings({ settings, isHost, playerCount, onChange }: {
+  settings: RoomSettings
+  isHost: boolean
+  playerCount: number
+  onChange: (change: SettingsChange) => void
+}) {
+  const savedWords = (settings.customWords ?? []).join(", ")
+  const [draft, setDraft] = useState(savedWords)
+  // Pick up the saved list when it changes (after saving, or on becoming host).
+  useEffect(() => setDraft(savedWords), [savedWords])
+
+  if (!isHost) {
+    const items = [
+      ["Rounds", settings.rounds],
+      ["Draw time", `${settings.timePerRound}s`],
+      ["Max players", settings.maxPlayers],
+      ["Words", settings.customWordsOnly ? "Custom only" : settings.category],
+    ] as const
+    return (
+      <div className="mt-6 text-left">
+        <dl className="grid grid-cols-2 gap-2">
+          {items.map(([label, value]) => (
+            <div key={label} className="rounded-lg bg-panel-2 px-3 py-2">
+              <dt className={fieldLabel}>{label}</dt>
+              <dd className="mt-0.5 text-sm font-semibold capitalize text-cream">{value}</dd>
+            </div>
+          ))}
+        </dl>
+        {settings.customWordCount > 0 && !settings.customWordsOnly && (
+          <p className="mt-2 text-center text-xs text-cream/50">Plus {settings.customWordCount} custom words from the host</p>
+        )}
+      </div>
+    )
+  }
+
+  const draftCount = countWords(draft)
+  const select = (label: string, id: string, value: number | string, options: (number | string)[], format: (v: never) => string, change: (v: string) => SettingsChange) => (
+    <label htmlFor={id} className="block">
+      <span className={fieldLabel}>{label}</span>
+      <select id={id} value={value} onChange={(e) => onChange(change(e.target.value))} className={selectClass}>
+        {options.map((option) => (
+          <option key={option} value={option}>{format(option as never)}</option>
+        ))}
+      </select>
+    </label>
+  )
+
+  return (
+    <div className="mt-6 space-y-3 text-left">
+      <div className="grid grid-cols-2 gap-3">
+        {select("Rounds", "lobby-rounds", settings.rounds, withCurrent(ROUND_OPTIONS, settings.rounds), String, (v) => ({ rounds: Number(v) }))}
+        {select("Draw time", "lobby-time", settings.timePerRound, withCurrent(TIME_OPTIONS, settings.timePerRound), (v: number) => `${v} seconds`, (v) => ({ timePerRound: Number(v) }))}
+        {select("Max players", "lobby-max", settings.maxPlayers, withCurrent(PLAYER_OPTIONS.filter((n) => n >= playerCount), settings.maxPlayers), String, (v) => ({ maxPlayers: Number(v) }))}
+        {select("Category", "lobby-category", settings.category, [...CATEGORIES], (v: Category) => v, (v) => ({ category: v as Category }))}
+      </div>
+      <div>
+        <label htmlFor="lobby-words" className="flex items-baseline justify-between">
+          <span className={fieldLabel}>Custom words</span>
+          <span className={`text-xs tabular-nums ${draftCount > MAX_CUSTOM_WORDS ? "text-danger" : "text-cream/50"}`}>
+            {draftCount}/{MAX_CUSTOM_WORDS}
+          </span>
+        </label>
+        <textarea
+          id="lobby-words"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          rows={2}
+          placeholder="Comma-separated, e.g. rocket ship, homework, our teacher"
+          className="mt-1 w-full resize-y rounded-lg border border-line bg-panel-2 px-2.5 py-2 text-sm text-cream placeholder:text-cream/40 focus:border-gold focus:outline-none"
+        />
+        <div className="mt-1.5 flex items-center justify-between gap-3">
+          <label className="flex items-center gap-2 text-sm text-cream/80">
+            <input
+              type="checkbox"
+              checked={settings.customWordsOnly}
+              onChange={(e) => onChange({ customWordsOnly: e.target.checked })}
+              className="h-4 w-4 accent-[var(--color-gold)]"
+            />
+            Use only custom words
+          </label>
+          <button
+            type="button"
+            onClick={() => onChange({ customWords: draft })}
+            disabled={draft.trim() === savedWords.trim()}
+            className="rounded-full border border-line px-3 py-1 text-sm font-semibold text-cream hover:border-gold disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Save words
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function LobbyPanel({
-  roomId, players, isHost, hostName, onStart, onCopied,
+  roomId, players, isHost, hostName, selfId, settings, onSettingsChange, onKick, onStart, onCopied,
 }: {
   roomId: string
   players: Player[]
   isHost: boolean
   hostName: string
+  selfId: string
+  settings: RoomSettings | null
+  onSettingsChange: (change: SettingsChange) => void
+  onKick: (playerId: string) => void
   onStart: () => void
   onCopied: (text: string) => void
 }) {
   return (
-    <Fade className="absolute inset-0 z-30 flex items-center justify-center overflow-y-auto rounded-2xl bg-ink p-3">
-      <motion.div className={`${card} p-5`} initial={{ scale: 0.95 }} animate={{ scale: 1 }}>
+    <Fade className="absolute inset-0 z-30 flex items-start justify-center overflow-y-auto rounded-2xl bg-ink p-3 sm:items-center">
+      <motion.div className={`${card} max-w-lg p-5`} initial={{ scale: 0.95 }} animate={{ scale: 1 }}>
         <h2 className="font-display text-3xl font-bold text-cream">Waiting room</h2>
         <p className="mt-1 text-sm text-cream/60">Share the code to invite friends.</p>
         <div className="mt-4 flex justify-center">
@@ -64,11 +180,23 @@ export function LobbyPanel({
               <div className="relative h-12 w-12 rounded-full flex items-center justify-center text-lg font-bold text-white" style={{ backgroundColor: avatarColor(p.name) }}>
                 {p.name.charAt(0).toUpperCase()}
                 {p.name === hostName && <Crown className="absolute -top-2 -right-1 h-4 w-4 text-gold" />}
+                {isHost && p.id !== selfId && (
+                  <button
+                    type="button"
+                    onClick={() => onKick(p.id)}
+                    className="absolute -top-2 -left-2.5 flex h-5 w-5 items-center justify-center rounded-full border border-line bg-panel text-cream/70 hover:border-danger hover:text-danger"
+                    aria-label={`Remove ${p.name} from the room`}
+                    title={`Remove ${p.name}`}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
               </div>
               <span className="max-w-[5rem] truncate text-xs text-cream/80">{p.name}</span>
             </div>
           ))}
         </div>
+        {settings && <LobbySettings settings={settings} isHost={isHost} playerCount={players.length} onChange={onSettingsChange} />}
         <div className="mt-7">
           {isHost ? (
             <>
@@ -82,6 +210,31 @@ export function LobbyPanel({
           )}
         </div>
       </motion.div>
+    </Fade>
+  )
+}
+
+/** Shown while Socket.IO retries a dropped connection; the server holds our seat meanwhile. */
+export function ReconnectingOverlay({ failed, onRetry, onLeave }: { failed: boolean; onRetry: () => void; onLeave: () => void }) {
+  return (
+    <Fade className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-[2px]">
+      <div className={card} role="alertdialog" aria-live="assertive" aria-label={failed ? "Connection lost" : "Reconnecting"}>
+        <WifiOff className="mx-auto h-10 w-10 text-gold" />
+        <p className="mt-3 font-display text-2xl font-bold text-cream">{failed ? "Connection lost" : "Reconnecting…"}</p>
+        <p className="mt-1 text-sm text-cream/60">
+          {failed ? "We couldn't get back to the room." : "Your seat and score are held for a few seconds."}
+        </p>
+        {failed && (
+          <div className="mt-5 flex flex-wrap justify-center gap-3">
+            <button type="button" onClick={onRetry} className={primary}>
+              <RotateCcw className="h-4 w-4" /> Try again
+            </button>
+            <button type="button" onClick={onLeave} className={secondary}>
+              <LogOut className="h-4 w-4" /> Leave
+            </button>
+          </div>
+        )}
+      </div>
     </Fade>
   )
 }

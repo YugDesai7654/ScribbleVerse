@@ -1,4 +1,5 @@
 import { z, ZodSchema } from 'zod';
+import { CATEGORIES } from '../game/words';
 
 // Shared building blocks
 const roomIdField = z.string().trim().min(4).max(8).regex(/^[A-Za-z0-9]+$/, 'Room code must be alphanumeric');
@@ -25,6 +26,52 @@ export const createRoomSchema = z.object({
 export const joinRoomSchema = z.object({
   roomId: roomIdField,
   name: nameField,
+  // Secret handed out on the first join; lets a refreshed tab reclaim its seat.
+  reconnectToken: z.string().min(1).max(64).optional(),
+});
+
+export const MAX_CUSTOM_WORDS = 200;
+const customWordSchema = z
+  .string()
+  .min(2, 'Custom words must be 2–30 characters')
+  .max(30, 'Custom words must be 2–30 characters')
+  .regex(/^[a-z][a-z' -]*$/, "Custom words may only use letters, spaces, hyphens and apostrophes");
+
+/** Parses the host's comma-separated textarea into a clean, de-duplicated word list. */
+export const customWordsField = z
+  .string()
+  .max(MAX_CUSTOM_WORDS * 32)
+  .transform((raw) => [
+    ...new Set(
+      raw
+        .split(',')
+        .map((word) => word.trim().toLowerCase().replace(/\s+/g, ' '))
+        .filter(Boolean)
+    ),
+  ])
+  .pipe(z.array(customWordSchema).max(MAX_CUSTOM_WORDS, `At most ${MAX_CUSTOM_WORDS} custom words`));
+
+export const roomSettingsFields = {
+  rounds: z.number().int().min(1).max(10),
+  timePerRound: z.number().int().min(10).max(300),
+  maxPlayers: z.number().int().min(2).max(12),
+  category: z.enum(CATEGORIES),
+  customWords: customWordsField,
+  customWordsOnly: z.boolean(),
+};
+
+/** Host-only lobby edit. Every field is optional so one control can change at a time. */
+export const updateSettingsSchema = z
+  .object({ roomId: roomIdField })
+  .extend(
+    Object.fromEntries(
+      Object.entries(roomSettingsFields).map(([key, field]) => [key, field.optional()])
+    ) as { [K in keyof typeof roomSettingsFields]: z.ZodOptional<(typeof roomSettingsFields)[K]> }
+  );
+
+export const kickPlayerSchema = z.object({
+  roomId: roomIdField,
+  playerId: z.string().min(1).max(64),
 });
 
 export const chatMessageSchema = z.object({
@@ -75,4 +122,14 @@ export const clearCanvasSchema = z.object({
 export function validate<T>(schema: ZodSchema<T>, data: unknown): T | null {
   const result = schema.safeParse(data);
   return result.success ? result.data : null;
+}
+
+/** Like `validate`, but returns the first issue's message so the client can show it. */
+export function validateWithError<T>(
+  schema: ZodSchema<T>,
+  data: unknown
+): { data: T; error?: undefined } | { data?: undefined; error: string } {
+  const result = schema.safeParse(data);
+  if (result.success) return { data: result.data };
+  return { error: result.error.issues[0]?.message ?? 'Invalid request' };
 }

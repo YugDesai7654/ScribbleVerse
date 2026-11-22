@@ -1,9 +1,14 @@
 import { Room } from '../model/room';
 
+import type { Category } from '../game/words';
+
 export type RoomSettings = {
   rounds: number;
   timePerRound: number;
   maxPlayers: number;
+  category: Category;
+  customWords: string[];
+  customWordsOnly: boolean;
 };
 
 // Host creates a room
@@ -36,4 +41,9 @@ export async function updateHost(roomId: string, newHostName: string) {
     { new: true }
   );
   return room;
+}
+
+// Save lobby settings the host changed, so a resumed room keeps them
+export async function updateRoomSettings(roomId: string, settings: Partial<RoomSettings>) {
+  return Room.findOneAndUpdate({ roomId }, { $set: settings }, { new: true });
 }

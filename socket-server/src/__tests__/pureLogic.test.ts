@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { getPlaceholder, getRandomWords, calculateGuessPoints, WORD_LIST } from '../server';
+import { getPlaceholder, getRandomWords, calculateGuessPoints } from '../server';
+import { MIXED_WORDS } from '../game/words';
 
 describe('getPlaceholder', () => {
   it('replaces each letter with an underscore', () => {
@@ -20,10 +21,10 @@ describe('getRandomWords', () => {
     expect(getRandomWords()).toHaveLength(3);
   });
 
-  it('returns only words that exist in WORD_LIST', () => {
+  it('returns only words from the mixed pack', () => {
     const words = getRandomWords();
     for (const word of words) {
-      expect(WORD_LIST).toContain(word);
+      expect(MIXED_WORDS).toContain(word);
     }
   });
 

@@ -6,7 +6,7 @@ import cookieParser from 'cookie-parser';
 import { parse as parseCookie } from 'cookie';
 import rateLimit from 'express-rate-limit';
 import { Server, Socket } from 'socket.io';
-import { createRoom, joinRoom, updateHost, type RoomSettings } from './api/room';
+import { createRoom, joinRoom, updateHost, updateRoomSettings, type RoomSettings } from './api/room';
 import {
   validate,
   createRoomSchema,
@@ -16,7 +16,11 @@ import {
   chooseWordSchema,
   clearCanvasSchema,
   undoStrokeSchema,
+  updateSettingsSchema,
+  kickPlayerSchema,
+  validateWithError,
 } from './validation/schemas';
+import { buildWordPool, MIXED_WORDS, pickWordOptions, WORD_OPTION_COUNT, type Category } from './game/words';
 import {
   buildHint,
   hintCountFor,
@@ -37,16 +41,8 @@ import { isDatabaseReady } from './dbConnect/dbconnect';
 // ====================================================================
 // --- Pure helpers (exported for unit testing, no side effects) ---
 // ====================================================================
-export const WORD_LIST = [
-  'apple', 'banana', 'car', 'dog', 'elephant', 'flower', 'guitar', 'house', 'island', 'jacket',
-  'kangaroo', 'lemon', 'mountain', 'notebook', 'ocean', 'pizza', 'queen', 'robot', 'sun', 'tree',
-  'umbrella', 'violin', 'whale', 'xylophone', 'yacht', 'zebra', 'balloon', 'cat', 'drum', 'egg',
-  'fish', 'grape', 'hat', 'ice', 'juice', 'kite', 'lamp', 'moon', 'nest', 'orange',
-];
-
-export function getRandomWords(): string[] {
-  const shuffled = [...WORD_LIST].sort(() => 0.5 - Math.random());
-  return shuffled.slice(0, 3);
+export function getRandomWords(pool: readonly string[] = MIXED_WORDS, used: ReadonlySet<string> = new Set()): string[] {
+  return pickWordOptions(pool, used);
 }
 
 export function getPlaceholder(word: string) {
@@ -63,11 +59,42 @@ export function calculateGuessPoints(timePerRound: number, elapsedSeconds: numbe
   return 50 + timeRemaining * 5;
 }
 
-type Player = { id: string; name: string; userId?: string };
+type Player = {
+  id: string; // current socket ID; replaced when the player reconnects
+  name: string;
+  userId?: string;
+  reconnectToken: string; // secret: lets a refreshed tab reclaim this seat
+  connected: boolean;
+  graceTimer?: NodeJS.Timeout; // pending seat release while disconnected
+};
 type Rooms = { [roomId: string]: Player[] };
 
 function publicPlayers(players: Player[]) {
-  return players.map(({ id, name }) => ({ id, name }));
+  return players.map(({ id, name, connected }) => ({ id, name, connected }));
+}
+
+/** Socket.IO disconnect reasons that mean the player meant to leave (or was removed). */
+const INTENTIONAL_DISCONNECTS = new Set(['client namespace disconnect', 'server namespace disconnect', 'server shutting down']);
+
+const DEFAULT_SETTINGS: RoomSettings = {
+  rounds: 3,
+  timePerRound: 60,
+  maxPlayers: 8,
+  category: 'mixed',
+  customWords: [],
+  customWordsOnly: false,
+};
+
+/** Reads a room document's settings, defaulting anything an older document lacks. */
+function settingsFromRoom(room: Partial<RoomSettings>): RoomSettings {
+  return {
+    rounds: room.rounds ?? DEFAULT_SETTINGS.rounds,
+    timePerRound: room.timePerRound ?? DEFAULT_SETTINGS.timePerRound,
+    maxPlayers: room.maxPlayers ?? DEFAULT_SETTINGS.maxPlayers,
+    category: (room.category as Category | undefined) ?? DEFAULT_SETTINGS.category,
+    customWords: [...(room.customWords ?? [])],
+    customWordsOnly: room.customWordsOnly ?? DEFAULT_SETTINGS.customWordsOnly,
+  };
 }
 
 /**
@@ -79,10 +106,7 @@ function publicPlayers(players: Player[]) {
  */
 export type TurnPhase = 'idle' | 'choosing' | 'drawing' | 'intermission';
 
-export type GameState = {
-  rounds: number;
-  timePerRound: number;
-  maxPlayers: number;
+export type GameState = RoomSettings & {
   currentRound: number;
   drawingOrder: string[]; // Socket IDs still to draw this round; [0] is the current drawer
   gameStarted: boolean;
@@ -94,6 +118,7 @@ export type GameState = {
   intermissionTimer?: NodeJS.Timeout; // Delay/countdown between turns and rounds
   gameId?: string;
   turnGains: { [playerName: string]: number }; // Points earned in the current turn
+  usedWords: Set<string>; // Words already drawn this game, never offered again
 };
 
 /** One line segment of a stroke, in normalised (0..1) canvas coordinates. */
@@ -113,6 +138,15 @@ const EMPTY_ROOM_GRACE_MS = 5 * 60 * 1000;
 const WORD_SELECTION_MS = 10_000;
 const NEXT_TURN_DELAY_MS = 5_000;
 const ROUND_COUNTDOWN_SECONDS = 5;
+/** How long a dropped player's seat is held during a game before their turn is skipped. */
+export const RECONNECT_GRACE_MS = 30_000;
+/** Recent chat sent to a reconnecting player. */
+const SYNC_CHAT_MESSAGES = 50;
+
+export type AppOptions = {
+  /** Overridable so tests don't have to wait out the real grace period. */
+  reconnectGraceMs?: number;
+};
 
 /** Reads TRUST_PROXY ("1", "2", "true", "loopback", ...) into an Express trust proxy value. */
 function trustProxySetting(raw: string | undefined): boolean | number | string | undefined {
@@ -130,7 +164,7 @@ function trustProxySetting(raw: string | undefined): boolean | number | string |
  * process entrypoint). Keeping this side-effect-free is what makes it possible
  * to spin up an independent, isolated instance per test.
  */
-export function createApp() {
+export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions = {}) {
   // --- Server and CORS Setup ---
   const app = express();
   app.disable('x-powered-by');
@@ -215,7 +249,7 @@ export function createApp() {
   // ====================================================================
   // --- Game state (scoped per-app-instance for testability) ---
   // ====================================================================
-  const { drawingLimiter, chatLimiter, roomActionLimiter } = createRateLimiters();
+  const { drawingLimiter, chatLimiter, roomActionLimiter, settingsLimiter } = createRateLimiters();
 
   const rooms: Rooms = {};
   const chatHistory: { [roomId: string]: { user: string; text: string; timestamp: number }[] } = {};
@@ -235,6 +269,8 @@ export function createApp() {
   // Stroke history for the current turn: lets the drawer undo, and is the
   // foundation for replaying the canvas to clients that (re)join later.
   const strokes: { [roomId: string]: StrokeSegment[] } = {};
+  // Names the host kicked from a lobby; they can't rejoin that room.
+  const kickedNames: { [roomId: string]: Set<string> } = {};
 
   function newGameState(settings: RoomSettings): GameState {
     return {
@@ -242,9 +278,11 @@ export function createApp() {
       currentRound: 1,
       drawingOrder: [],
       gameStarted: false,
+      customWords: [...settings.customWords],
       phase: 'idle',
       turnId: 0,
       turnGains: {},
+      usedWords: new Set(),
     };
   }
 
@@ -273,13 +311,15 @@ export function createApp() {
     clearTurnTimers(roomId);
     if (emptyRoomTimers[roomId]) clearTimeout(emptyRoomTimers[roomId]);
     delete emptyRoomTimers[roomId];
-    delete rooms[roomId];
     delete gameState[roomId];
     delete chatHistory[roomId];
     delete playerPoints[roomId];
     delete correctGuessers[roomId];
     delete wordState[roomId];
     delete strokes[roomId];
+    delete kickedNames[roomId];
+    for (const player of rooms[roomId] ?? []) if (player.graceTimer) clearTimeout(player.graceTimer);
+    delete rooms[roomId];
   }
 
   /** Reclaims a room's memory if nobody has joined it within the grace period. */
@@ -394,7 +434,10 @@ export function createApp() {
     // can never fire into (and hijack) this new turn.
     clearTurnTimers(roomId);
 
-    const options = getRandomWords();
+    const options = pickWordOptions(
+      buildWordPool(state.category, state.customWords, state.customWordsOnly),
+      state.usedWords
+    );
     wordState[roomId] = { currentWord: null, wordOptions: options, revealed: new Set(), hintTimers: [] };
     strokes[roomId] = [];
     state.turnGains = {};
@@ -423,6 +466,7 @@ export function createApp() {
 
     const drawerId = state.drawingOrder[0];
     words.currentWord = word;
+    state.usedWords.add(word);
     if (words.wordSelectionTimeout) clearTimeout(words.wordSelectionTimeout);
     words.wordSelectionTimeout = undefined;
 
@@ -553,9 +597,198 @@ export function createApp() {
     state.intermissionTimer = interval;
   }
 
+  function systemMessage(roomId: string, text: string) {
+    io.to(roomId).emit('chatMessage', { user: 'System', text, timestamp: Date.now() });
+  }
+
+  /** Ends the turn early once every connected guesser has the word. */
+  function endTurnIfAllGuessed(roomId: string) {
+    const state = gameState[roomId];
+    if (!state?.gameStarted || state.phase !== 'drawing') return;
+    const drawerId = state.drawingOrder[0];
+    const guessers = (rooms[roomId] || []).filter((p) => p.id !== drawerId && p.connected);
+    if (guessers.length > 0 && guessers.every((p) => correctGuessers[roomId]?.has(p.name))) {
+      endTurnAndProceed(roomId);
+    }
+  }
+
+  /**
+   * Sends the room's settings to its connected players. Only the host gets the
+   * custom word list itself; everyone else would otherwise see the answers.
+   */
+  function emitSettings(roomId: string, hostName: string, only?: Socket) {
+    const state = gameState[roomId];
+    if (!state) return;
+    const shared = {
+      rounds: state.rounds,
+      timePerRound: state.timePerRound,
+      maxPlayers: state.maxPlayers,
+      category: state.category,
+      customWordsOnly: state.customWordsOnly,
+      customWordCount: state.customWords.length,
+    };
+    const forHost = { ...shared, customWords: state.customWords };
+    for (const player of rooms[roomId] || []) {
+      if (!player.connected || (only && player.id !== only.id)) continue;
+      io.to(player.id).emit('settingsUpdated', player.name === hostName ? forHost : shared);
+    }
+  }
+
+  /**
+   * Promotes a new host if the current one has left, then broadcasts the
+   * roster. A disconnected host still holds their seat (and the crown) during
+   * the reconnect grace period.
+   */
+  async function syncRoster(roomId: string): Promise<string> {
+    try {
+      const room = await joinRoom(roomId);
+      let hostName: string = room.hostName;
+      const players = rooms[roomId] || [];
+      if (players.length > 0 && !players.some((p) => p.name === hostName)) {
+        const newHost = players.find((p) => p.connected) ?? players[0];
+        const updated = await updateHost(roomId, newHost.name);
+        hostName = updated?.hostName || newHost.name;
+        systemMessage(roomId, `${newHost.name} is now the host.`);
+        emitSettings(roomId, hostName);
+      }
+      io.to(roomId).emit('playerList', { players: publicPlayers(rooms[roomId] || []), hostName });
+      return hostName;
+    } catch (err) {
+      logger.error({ err, roomId }, 'Failed to update room roster');
+      io.to(roomId).emit('playerList', { players: publicPlayers(rooms[roomId] || []), hostName: '' });
+      return '';
+    }
+  }
+
+  /**
+   * Takes a player out of the room for good (left, kicked, or didn't reconnect
+   * in time) and keeps the game moving without them.
+   */
+  function removePlayer(roomId: string, playerId: string) {
+    const players = rooms[roomId];
+    const leaving = players?.find((p) => p.id === playerId);
+    if (!players || !leaving) return;
+    if (leaving.graceTimer) clearTimeout(leaving.graceTimer);
+    leaving.graceTimer = undefined;
+    rooms[roomId] = players.filter((p) => p !== leaving);
+
+    if (rooms[roomId].length === 0) {
+      cleanupRoom(roomId);
+      return;
+    }
+
+    const state = gameState[roomId];
+    if (state?.gameStarted) {
+      const wasDrawing =
+        leaving.id === state.drawingOrder[0] && (state.phase === 'choosing' || state.phase === 'drawing');
+      if (wasDrawing) {
+        systemMessage(roomId, `${leaving.name} (drawer) has left. Moving to next turn.`);
+        endTurnAndProceed(roomId);
+      } else {
+        // Drop them from the queue so the game never waits on a missing drawer.
+        state.drawingOrder = state.drawingOrder.filter((id) => id !== leaving.id);
+        if (rooms[roomId].length < 2) {
+          finishGame(roomId, state, 'Not enough players to continue.');
+        } else {
+          // They may have been the last guesser everyone was waiting on.
+          endTurnIfAllGuessed(roomId);
+        }
+      }
+    }
+
+    void syncRoster(roomId);
+  }
+
+  /** Keeps a dropped player's seat, score and turn for the grace period. */
+  function holdSeat(roomId: string, player: Player) {
+    player.connected = false;
+    if (player.graceTimer) clearTimeout(player.graceTimer);
+    player.graceTimer = setTimeout(() => {
+      player.graceTimer = undefined;
+      if (player.connected || !rooms[roomId]?.includes(player)) return;
+      systemMessage(roomId, `${player.name} didn't reconnect in time.`);
+      removePlayer(roomId, player.id);
+    }, reconnectGraceMs);
+    player.graceTimer.unref?.();
+
+    systemMessage(roomId, `${player.name} lost connection. Holding their seat for ${Math.round(reconnectGraceMs / 1000)}s.`);
+    // A dropped guesser shouldn't hold up a turn everyone else has already solved.
+    endTurnIfAllGuessed(roomId);
+    void syncRoster(roomId);
+  }
+
+  /** Everything a (re)joining client needs to redraw the room as it is right now. */
+  function buildSyncState(roomId: string, forSocketId: string) {
+    const state = gameState[roomId];
+    const words = wordState[roomId];
+    const drawerId = state.gameStarted ? (state.drawingOrder[0] ?? null) : null;
+    const isDrawer = drawerId === forSocketId;
+    const phase = state.gameStarted ? state.phase : 'lobby';
+    const now = Date.now();
+    const startedAt = state.roundStartTime ?? now;
+
+    let word: string | null = null;
+    let timeLeft = 0;
+    if (phase === 'drawing' && words?.currentWord) {
+      word = isDrawer ? words.currentWord : buildHint(words.currentWord, words.revealed);
+      timeLeft = Math.ceil((startedAt + state.timePerRound * 1000 - now) / 1000);
+    } else if (phase === 'choosing') {
+      timeLeft = Math.ceil((startedAt + WORD_SELECTION_MS - now) / 1000);
+    }
+
+    return {
+      phase,
+      round: state.currentRound,
+      totalRounds: state.rounds,
+      timePerRound: state.timePerRound,
+      drawerId,
+      isDrawer,
+      word,
+      wordOptions: isDrawer && phase === 'choosing' ? (words?.wordOptions ?? null) : null,
+      timeLeft: Math.max(0, timeLeft),
+      scores: playerPoints[roomId] ?? {},
+      guessed: [...(correctGuessers[roomId] ?? [])],
+      strokes: state.gameStarted ? (strokes[roomId] ?? []) : [],
+      chat: (chatHistory[roomId] ?? []).slice(-SYNC_CHAT_MESSAGES),
+    };
+  }
+
+  /** Clears the empty-room reclaim timer once someone is in the room again. */
+  function cancelEmptyRoomCleanup(roomId: string) {
+    if (emptyRoomTimers[roomId]) {
+      clearTimeout(emptyRoomTimers[roomId]);
+      delete emptyRoomTimers[roomId];
+    }
+  }
+
   io.on('connection', (socket: Socket) => {
     let currentRoom: string | null = null;
     let playerName: string | null = null;
+
+    /** Moves a held seat onto this socket and sends it the live game state. */
+    async function rejoinSeat(roomId: string, seat: Player) {
+      const oldId = seat.id;
+      if (seat.graceTimer) clearTimeout(seat.graceTimer);
+      seat.graceTimer = undefined;
+      seat.id = socket.id;
+      seat.connected = true;
+
+      const state = gameState[roomId];
+      if (state) state.drawingOrder = state.drawingOrder.map((id) => (id === oldId ? socket.id : id));
+      socket.join(roomId);
+      cancelEmptyRoomCleanup(roomId);
+
+      // The old socket may still look alive (e.g. the server hasn't noticed a
+      // dropped network yet, or a duplicated tab). Its seat now belongs to this
+      // socket, so its own disconnect handler will find nothing to remove.
+      if (oldId !== socket.id) io.sockets.sockets.get(oldId)?.disconnect(true);
+
+      socket.emit('joinRoomSuccess', { roomId, reconnectToken: seat.reconnectToken, rejoined: true });
+      socket.emit('syncState', buildSyncState(roomId, socket.id));
+      systemMessage(roomId, `${seat.name} reconnected.`);
+      const hostName = await syncRoster(roomId);
+      emitSettings(roomId, hostName, socket);
+    }
 
     socket.on('createRoom', async (payload) => {
       const data = validate(createRoomSchema, payload);
@@ -573,7 +806,7 @@ export function createApp() {
       // must match it or they'd be unable to start their own game.
       const hostName = socket.data.displayName || data.name;
       try {
-        const settings = { rounds, timePerRound, maxPlayers };
+        const settings: RoomSettings = { ...DEFAULT_SETTINGS, rounds, timePerRound, maxPlayers };
         await createRoom(roomId, hostName, settings);
         gameState[roomId] = newGameState(settings);
         playerPoints[roomId] = {};
@@ -604,8 +837,21 @@ export function createApp() {
       // different in-game name than their account, and means the client doesn't
       // need to be trusted for this at all.
       const name = socket.data.displayName || data.name;
-      const { roomId } = data;
+      const { roomId, reconnectToken } = data;
       try {
+        // A valid token reclaims a held seat, even mid-game. A logged-in seat can
+        // only be reclaimed by the same account, so a leaked token isn't enough.
+        const seat = reconnectToken
+          ? rooms[roomId]?.find((p) => p.reconnectToken === reconnectToken)
+          : undefined;
+        if (seat && (!seat.userId || seat.userId === socket.data.userId)) {
+          if (currentRoom) return; // a concurrent join from this socket already succeeded
+          currentRoom = roomId;
+          playerName = seat.name;
+          await rejoinSeat(roomId, seat);
+          return;
+        }
+
         if (gameState[roomId]?.gameStarted) {
           socket.emit('joinError', { message: 'Game already started. Cannot join.' });
           return;
@@ -616,11 +862,11 @@ export function createApp() {
         // the server restarted. Rehydrate it from its persisted settings.
         const resumed = !gameState[roomId];
         if (resumed) {
-          gameState[roomId] = newGameState({
-            rounds: room.rounds ?? 3,
-            timePerRound: room.timePerRound ?? 60,
-            maxPlayers: room.maxPlayers ?? 8,
-          });
+          gameState[roomId] = newGameState(settingsFromRoom(room));
+        }
+        if (kickedNames[roomId]?.has(name)) {
+          socket.emit('joinError', { message: 'The host removed you from this room.' });
+          return;
         }
 
         if (!rooms[roomId]) rooms[roomId] = [];
@@ -640,16 +886,16 @@ export function createApp() {
         currentRoom = roomId;
         playerName = name;
 
+        const token = randomUUID();
         rooms[roomId].push({
           id: socket.id,
           name,
           userId: socket.data.userId,
+          reconnectToken: token,
+          connected: true,
         });
         socket.join(roomId);
-        if (emptyRoomTimers[roomId]) {
-          clearTimeout(emptyRoomTimers[roomId]);
-          delete emptyRoomTimers[roomId];
-        }
+        cancelEmptyRoomCleanup(roomId);
 
         // A resumed room whose host is gone would otherwise be unstartable.
         let hostName = room.hostName;
@@ -664,7 +910,8 @@ export function createApp() {
         io.to(roomId).emit('playerList', { players: publicPlayers(rooms[roomId]), hostName });
         socket.emit('chatHistory', chatHistory[roomId]);
         io.to(roomId).emit('pointsUpdate', playerPoints[roomId]);
-        socket.emit('joinRoomSuccess', { roomId });
+        emitSettings(roomId, hostName, socket);
+        socket.emit('joinRoomSuccess', { roomId, reconnectToken: token });
 
       } catch (err: any) {
         socket.emit('joinError', { message: err.message });
@@ -722,13 +969,7 @@ export function createApp() {
         io.to(roomId).emit('chatMessage', message);
         io.to(roomId).emit('pointsUpdate', playerPoints[roomId]);
 
-        const players = rooms[roomId] || [];
-        const drawerId = state.drawingOrder[0];
-        const guessers = players.filter(p => p.id !== drawerId);
-
-        if (guessers.length > 0 && guessers.every((p) => correctGuessers[roomId].has(p.name))) {
-           endTurnAndProceed(roomId);
-        }
+        endTurnIfAllGuessed(roomId);
         return;
       }
 
@@ -801,8 +1042,9 @@ export function createApp() {
         const players = rooms[roomId] || [];
         const host = players.find(p => p.id === socket.id);
         const roomInfo = await joinRoom(roomId);
+        const connectedCount = players.filter((p) => p.connected).length;
 
-        if (players.length >= 2 && host && host.name === roomInfo.hostName) {
+        if (connectedCount >= 2 && host && host.name === roomInfo.hostName) {
           const state = gameState[roomId];
           if (!state || state.gameStarted) return;
 
@@ -812,6 +1054,7 @@ export function createApp() {
           state.currentRound = 1;
           state.gameStarted = true;
           state.phase = 'intermission';
+          state.usedWords = new Set();
 
           playerPoints[roomId] = {};
           players.forEach(p => {
@@ -832,60 +1075,88 @@ export function createApp() {
       }
     });
 
-    socket.on('disconnect', () => {
-      const roomId = currentRoom;
-      if (!roomId || !rooms[roomId]) return;
-
-      const disconnectedPlayer = rooms[roomId].find(p => p.id === socket.id);
-      rooms[roomId] = rooms[roomId].filter(p => p.id !== socket.id);
-
-      if (rooms[roomId].length === 0) {
-        cleanupRoom(roomId);
+    socket.on('updateSettings', async (payload) => {
+      const parsed = validateWithError(updateSettingsSchema, payload);
+      if (parsed.error !== undefined) {
+        socket.emit('settingsError', { message: parsed.error });
+        return;
+      }
+      const { roomId, ...changes } = parsed.data;
+      if (roomId !== currentRoom) return;
+      if (!(await isAllowed(settingsLimiter, socket.id))) {
+        socket.emit('settingsError', { message: 'Too many changes. Please slow down.' });
         return;
       }
 
-      const state = gameState[roomId];
-      if (disconnectedPlayer && state?.gameStarted) {
-        const wasDrawing =
-          disconnectedPlayer.id === state.drawingOrder[0] &&
-          (state.phase === 'choosing' || state.phase === 'drawing');
+      try {
+        const room = await joinRoom(roomId);
+        const state = gameState[roomId];
+        // Host-only, and settings are locked once the game is running.
+        if (!state || state.gameStarted || room.hostName !== playerName) return;
 
-        if (wasDrawing) {
-          io.to(roomId).emit('chatMessage', { user: 'System', text: `${disconnectedPlayer.name} (drawer) has disconnected. Moving to next turn.`, timestamp: Date.now() });
-          endTurnAndProceed(roomId);
-        } else {
-          // Drop them from the queue so the game never waits on a missing drawer.
-          state.drawingOrder = state.drawingOrder.filter((id) => id !== disconnectedPlayer.id);
-          if (rooms[roomId].length < 2) {
-            finishGame(roomId, state, 'Not enough players to continue.');
-          } else if (state.phase === 'drawing') {
-            // They may have been the last guesser everyone was waiting on.
-            const drawerId = state.drawingOrder[0];
-            const guessers = rooms[roomId].filter((p) => p.id !== drawerId);
-            if (guessers.length > 0 && guessers.every((p) => correctGuessers[roomId]?.has(p.name))) {
-              endTurnAndProceed(roomId);
-            }
-          }
+        const next = { ...state, ...changes };
+        const playerCount = rooms[roomId]?.length ?? 0;
+        if (next.maxPlayers < playerCount) {
+          socket.emit('settingsError', { message: `There are already ${playerCount} players in the room.` });
+          return;
         }
+        if (next.customWordsOnly && next.customWords.length < WORD_OPTION_COUNT) {
+          socket.emit('settingsError', {
+            message: `Add at least ${WORD_OPTION_COUNT} custom words to play with only custom words.`,
+          });
+          return;
+        }
+
+        Object.assign(state, changes);
+        updateRoomSettings(roomId, changes).catch((err) => {
+          logger.error({ err, roomId }, 'Failed to persist room settings');
+        });
+        emitSettings(roomId, room.hostName);
+      } catch (err) {
+        logger.error({ err, roomId }, 'Failed to update settings');
+        socket.emit('settingsError', { message: 'Could not update settings. Please try again.' });
       }
+    });
 
-      joinRoom(roomId).then(async room => {
-        let hostName = room.hostName;
-        const remainingPlayers = rooms[roomId] || [];
-        const hostStillPresent = remainingPlayers.some(p => p.name === hostName);
+    socket.on('kickPlayer', async (payload) => {
+      const data = validate(kickPlayerSchema, payload);
+      if (!data || data.roomId !== currentRoom || data.playerId === socket.id) return;
+      const { roomId, playerId } = data;
+      if (!(await isAllowed(settingsLimiter, socket.id))) return;
 
-        if (!hostStillPresent && remainingPlayers.length > 0) {
-          const newHost = remainingPlayers[0];
-          const updated = await updateHost(roomId, newHost.name);
-          hostName = updated?.hostName || newHost.name;
-          io.to(roomId).emit('chatMessage', { user: 'System', text: `${newHost.name} is now the host.`, timestamp: Date.now() });
-        }
+      try {
+        const room = await joinRoom(roomId);
+        const state = gameState[roomId];
+        // Host-only, lobby-only.
+        if (!state || state.gameStarted || room.hostName !== playerName) return;
+        const target = rooms[roomId]?.find((p) => p.id === playerId);
+        if (!target) return;
 
-        io.to(roomId).emit('playerList', { players: publicPlayers(remainingPlayers), hostName });
-      }).catch((err) => {
-        logger.error({ err, roomId }, 'Failed to update room after disconnect');
-        io.to(roomId).emit('playerList', { players: publicPlayers(rooms[roomId] || []), hostName: '' });
-      });
+        (kickedNames[roomId] ??= new Set()).add(target.name);
+        const targetSocket = io.sockets.sockets.get(target.id);
+        io.to(target.id).emit('kicked', { message: 'The host removed you from the room.' });
+        systemMessage(roomId, `${target.name} was removed by the host.`);
+        // Remove the seat first so the socket's own disconnect handler is a no-op.
+        removePlayer(roomId, target.id);
+        targetSocket?.leave(roomId);
+        targetSocket?.disconnect(true);
+      } catch (err) {
+        logger.error({ err, roomId }, 'Failed to kick player');
+      }
+    });
+
+    socket.on('disconnect', (reason) => {
+      const roomId = currentRoom;
+      if (!roomId || !rooms[roomId]) return;
+      const player = rooms[roomId].find((p) => p.id === socket.id);
+      if (!player) return; // seat was handed to a newer socket, or already removed
+
+      // A refresh or network drop mid-game holds the seat; leaving on purpose doesn't.
+      if (!INTENTIONAL_DISCONNECTS.has(reason) && gameState[roomId]?.gameStarted) {
+        holdSeat(roomId, player);
+      } else {
+        removePlayer(roomId, player.id);
+      }
     });
   });
 

@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { CATEGORIES } from '../game/words';
 
 // Rooms are short-lived: MongoDB's TTL monitor removes them a day after creation
 // so abandoned room codes don't accumulate forever.
@@ -11,6 +12,9 @@ export const roomSchema = new mongoose.Schema({
     rounds: { type: Number, default: 3, min: 1, max: 10 },
     timePerRound: { type: Number, default: 60, min: 10, max: 300 },
     maxPlayers: { type: Number, default: 8, min: 2, max: 12 },
+    category: { type: String, default: 'mixed', enum: CATEGORIES },
+    customWords: { type: [String], default: [] },
+    customWordsOnly: { type: Boolean, default: false },
     createdAt: { type: Date, default: Date.now, expires: ROOM_TTL_SECONDS }
   });
 

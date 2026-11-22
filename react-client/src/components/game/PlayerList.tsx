@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion"
-import { Check, Crown, Pencil } from "lucide-react"
+import { Check, Crown, Pencil, WifiOff } from "lucide-react"
 import type { Player } from "../../game/types"
 import { avatarColor } from "../../game/utils"
 
@@ -31,7 +31,7 @@ export default function PlayerList({ players, points, hostName, selfId, drawerId
               initial={{ opacity: 0, x: -12 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -12 }}
-              className={`relative flex items-center gap-3 rounded-xl border px-3 py-2 ${
+              className={`relative flex items-center gap-3 rounded-xl border px-3 py-2 ${player.connected === false ? "opacity-50" : ""} ${
                 isDrawer ? "border-gold/70 bg-gold/10" : hasGuessed ? "border-success/50 bg-success/10" : "border-transparent bg-panel-2"
               }`}
             >
@@ -51,6 +51,7 @@ export default function PlayerList({ players, points, hostName, selfId, drawerId
                 <p className="text-xs text-cream/60 tabular-nums">{points[player.name] || 0} pts</p>
               </div>
               <div className="flex items-center gap-1 text-cream/80">
+                {player.connected === false && <WifiOff className="h-4 w-4 text-cream/70" aria-label="Reconnecting" />}
                 {player.name === hostName && <Crown className="h-4 w-4 text-gold" aria-label="Host" />}
                 {isDrawer && <Pencil className="h-4 w-4 text-gold" aria-label="Drawing" />}
                 {hasGuessed && <Check className="h-4 w-4 text-success" aria-label="Guessed" />}
