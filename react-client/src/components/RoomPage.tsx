@@ -353,8 +353,8 @@ export default function RoomPage() {
               </div>
 
               {/* Enhanced Doorknob */}
-              <div className="absolute top-1/2 -translate-y-1/2 right-8">
-                <div className="w-10 h-10 bg-gradient-to-br from-yellow-500 to-yellow-600 rounded-full shadow-lg border-2 border-yellow-300 relative">
+              <div className="absolute top-1/2 -translate-y-1/2 right-2 sm:right-8">
+                <div className="w-7 h-7 sm:w-10 sm:h-10 bg-gradient-to-br from-yellow-500 to-yellow-600 rounded-full shadow-lg border-2 border-yellow-300 relative">
                   <div className="absolute inset-1 bg-gradient-to-br from-yellow-300 to-yellow-400 rounded-full" />
                   <div className="absolute top-1 left-1 w-2 h-2 bg-yellow-200 rounded-full" />
                 </div>
@@ -362,7 +362,7 @@ export default function RoomPage() {
 
               {/* Door Content */}
               <m.div
-                className="p-8 h-full flex flex-col justify-center"
+                className="p-8 pr-10 sm:pr-8 h-full flex flex-col justify-center"
                 style={{ transform: 'translateZ(1px)' }} // <-- THE FIX IS HERE
                 animate={{ opacity: isEntering ? 0 : 1 }}
                 transition={{ duration: 0.3 }}

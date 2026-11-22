@@ -154,10 +154,12 @@ function LobbySettings({ settings, isHost, playerCount, onChange }: {
 }
 
 export function LobbyPanel({
-  roomId, players, isHost, hostName, selfId, settings, onSettingsChange, onKick, onStart, onCopied,
+  roomId, players, connectedCount, isHost, hostName, selfId, settings, onSettingsChange, onKick, onStart, onCopied,
 }: {
   roomId: string
   players: Player[]
+  /** Seats that are currently connected; the server only starts with 2 or more. */
+  connectedCount: number
   isHost: boolean
   hostName: string
   selfId: string
@@ -201,10 +203,10 @@ export function LobbyPanel({
         <div className="mt-7">
           {isHost ? (
             <>
-              <button type="button" onClick={onStart} disabled={players.length < 2} className={primary}>
+              <button type="button" onClick={onStart} disabled={connectedCount < 2} className={primary}>
                 Start game
               </button>
-              {players.length < 2 && <p className="mt-3 text-sm text-cream/50">Need at least 2 players to start.</p>}
+              {connectedCount < 2 && <p className="mt-3 text-sm text-cream/50">Need at least 2 connected players to start.</p>}
             </>
           ) : (
             <p className="text-sm text-cream/60">Waiting for {hostName || "the host"} to start…</p>

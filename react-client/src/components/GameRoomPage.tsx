@@ -61,7 +61,7 @@ function clearHostToken(roomId: string) {
 }
 
 /** What the room is doing right now, from this client's point of view. */
-type Phase = "lobby" | "choosing" | "drawing" | "summary" | "over"
+type Phase = "connecting" | "lobby" | "choosing" | "drawing" | "summary" | "over"
 
 export default function GameRoomPage() {
   const { roomId } = useParams()
@@ -81,7 +81,7 @@ export default function GameRoomPage() {
   const [socketId, setSocketId] = useState("")
   const [players, setPlayers] = useState<Player[]>([])
   const [hostName, setHostName] = useState("")
-  const [phase, setPhase] = useState<Phase>("lobby")
+  const [phase, setPhase] = useState<Phase>("connecting")
   const [round, setRound] = useState(1)
   const [totalRounds, setTotalRounds] = useState(3)
   const [timePerRound, setTimePerRound] = useState(60)
@@ -108,6 +108,7 @@ export default function GameRoomPage() {
   const [brushSize, setBrushSize] = useState<number>(BRUSH_SIZES[1])
 
   const timerRef = useRef<number | null>(null)
+  const deadlineRef = useRef(0)
   const timePerRoundRef = useRef(timePerRound)
   timePerRoundRef.current = timePerRound
   const pointsRef = useRef<Record<string, number>>({})
@@ -120,10 +121,17 @@ export default function GameRoomPage() {
   const kickedRef = useRef(false)
   const batcherRef = useRef<SegmentBatcher | null>(null)
 
+  const connectedCount = players.filter((p) => p.connected !== false).length
+
   const stopTimer = () => {
     if (timerRef.current) window.clearInterval(timerRef.current)
     timerRef.current = null
   }
+
+  // Tick sound for the last seconds; outside any state updater so StrictMode can't double it.
+  useEffect(() => {
+    if (phase === "drawing" && timer > 0 && timer <= 5) play("tick")
+  }, [timer, phase])
 
   // ---- Socket wiring -------------------------------------------------------
   useEffect(() => {
@@ -131,17 +139,14 @@ export default function GameRoomPage() {
 
     const startTimer = (seconds = timePerRoundRef.current) => {
       stopTimer()
+      // Count down from a deadline so a throttled background tab doesn't drift.
+      deadlineRef.current = Date.now() + seconds * 1000
       setTimer(seconds)
       timerRef.current = window.setInterval(() => {
-        setTimer((t) => {
-          if (t <= 1) {
-            stopTimer()
-            return 0
-          }
-          if (t <= 6) play("tick")
-          return t - 1
-        })
-      }, 1000)
+        const left = Math.max(0, Math.ceil((deadlineRef.current - Date.now()) / 1000))
+        setTimer(left)
+        if (left <= 0) stopTimer()
+      }, 250)
     }
 
     kickedRef.current = false
@@ -316,7 +321,7 @@ export default function GameRoomPage() {
         }
       },
       closeGuess: ({ text }: { text: string }) => {
-        setMessages((prev) => [...prev, { user: meRef.current, text, timestamp: Date.now(), close: true }])
+        setMessages((prev) => [...prev.slice(-199), { user: meRef.current, text, timestamp: Date.now(), close: true }])
         play("close")
       },
       chatError: (data: { message: string }) => toast(data.message, "error"),
@@ -420,7 +425,8 @@ export default function GameRoomPage() {
   useEffect(() => {
     if (!canDraw) return
     const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement)?.tagName === "INPUT") return
+      const target = e.target as HTMLElement | null
+      if (target && (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable)) return
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
         e.preventDefault()
         undo()
@@ -493,7 +499,7 @@ export default function GameRoomPage() {
           <InviteCode roomId={roomId} onCopied={(t) => toast(t, "success")} />
         </div>
         <div className="flex items-center gap-2 text-sm text-cream/70">
-          {phase !== "lobby" && phase !== "over" && (
+          {phase !== "connecting" && phase !== "lobby" && phase !== "over" && (
             <span className="whitespace-nowrap rounded-lg bg-panel-2 px-2.5 py-1 tabular-nums">
               Round {round}/{totalRounds}
             </span>
@@ -502,7 +508,7 @@ export default function GameRoomPage() {
           <button type="button" onClick={toggleMute} className="rounded-lg p-2 hover:bg-panel-2" aria-label={muted ? "Unmute sounds" : "Mute sounds"}>
             {muted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
           </button>
-          <button type="button" onClick={leave} className="flex items-center gap-2 rounded-lg border border-danger/50 px-3 py-1.5 text-danger hover:bg-danger/10">
+          <button type="button" onClick={leave} aria-label="Leave room" className="flex items-center gap-2 rounded-lg border border-danger/50 px-3 py-1.5 text-danger hover:bg-danger/10">
             <LogOut className="h-4 w-4" />
             <span className="hidden sm:inline">Leave</span>
           </button>
@@ -534,6 +540,7 @@ export default function GameRoomPage() {
                 </p>
               )}
               {phase === "choosing" && isDrawer && !wordOptions && <p className="text-sm text-cream/70">Starting your turn…</p>}
+              {phase === "connecting" && <p className="text-sm text-cream/60">Joining room…</p>}
               {phase === "lobby" && <p className="text-sm text-cream/60">Waiting for the game to start</p>}
               {phase === "summary" && <p className="text-sm text-cream/60">Next turn coming up…</p>}
               {phase === "over" && <p className="text-sm text-cream/60">Game finished</p>}
@@ -548,14 +555,15 @@ export default function GameRoomPage() {
             {/* Word choice for the drawer */}
             <AnimatePresence>
               {isDrawer && phase === "choosing" && wordOptions && (
-                <m.div className="absolute inset-0 z-20 flex items-center justify-center overflow-y-auto bg-black/70 p-3" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                <m.div role="dialog" aria-modal="true" aria-labelledby="pick-word-title" className="absolute inset-0 z-20 flex items-center justify-center overflow-y-auto bg-black/70 p-3" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                   <div className="text-center">
-                    <p className="font-display text-xl font-bold sm:text-2xl">Pick a word to draw</p>
+                    <p id="pick-word-title" className="font-display text-xl font-bold sm:text-2xl">Pick a word to draw</p>
                     <p className="mt-0.5 text-xs text-cream/60 sm:text-sm">Auto-picks in 10 seconds</p>
                     <div className="mt-3 flex flex-wrap justify-center gap-2 sm:mt-5 sm:gap-3">
-                      {wordOptions.map((word) => (
+                      {wordOptions.map((word, i) => (
                         <m.button
                           key={word}
+                          autoFocus={i === 0}
                           type="button"
                           onClick={() => chooseWord(word)}
                           whileHover={{ y: -3 }}
@@ -576,6 +584,7 @@ export default function GameRoomPage() {
                 <LobbyPanel
                   roomId={roomId}
                   players={players}
+                  connectedCount={connectedCount}
                   isHost={isHost}
                   hostName={hostName}
                   selfId={socketId}
@@ -644,7 +653,7 @@ export default function GameRoomPage() {
             reason={gameOver.reason}
             gallery={gameOver.gallery ?? []}
             isHost={isHost}
-            canPlayAgain={players.length >= 2}
+            canPlayAgain={connectedCount >= 2}
             onPlayAgain={startGame}
             onLeave={leave}
           />
