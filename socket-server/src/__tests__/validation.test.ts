@@ -8,6 +8,7 @@ import {
   chooseWordSchema,
   updateSettingsSchema,
   kickPlayerSchema,
+  startGameSchema,
 } from '../validation/schemas';
 import { CATEGORIES } from '../game/words';
 
@@ -162,5 +163,15 @@ describe('kickPlayerSchema and reconnect token', () => {
   it('accepts an optional reconnect token on join', () => {
     expect(validate(joinRoomSchema, { roomId: 'ABC123', name: 'Al', reconnectToken: 'tok' })).toMatchObject({ reconnectToken: 'tok' });
     expect(validate(joinRoomSchema, { roomId: 'ABC123', name: 'Al', reconnectToken: 'x'.repeat(65) })).toBeNull();
+  });
+});
+
+describe('startGameSchema', () => {
+  it('accepts no payload or an empty object', () => {
+    expect(validate(startGameSchema, undefined)).toBeUndefined();
+    expect(validate(startGameSchema, {})).toEqual({});
+  });
+  it('rejects unknown keys such as a client-supplied room', () => {
+    expect(validate(startGameSchema, { roomId: 'X' })).toBeNull();
   });
 });

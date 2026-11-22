@@ -446,6 +446,55 @@ describe('game flow (Socket.IO integration)', () => {
     await started;
   });
 
+  it('refuses a join that lands while the game is starting', async () => {
+    const { roomId, players } = await setupRoom(['Alice', 'Bob']);
+    const original = vi.mocked(joinRoomRecord).getMockImplementation()!;
+    vi.mocked(joinRoomRecord).mockImplementationOnce(async (id) => {
+      await sleep(150);
+      return original(id);
+    });
+
+    const cara = await join(testServer.url);
+    const lists = collect<{ players: { name: string }[] }>(players[0].socket, 'playerList');
+    const refused = waitForEvent<{ message: string }>(cara, 'joinError');
+    cara.emit('joinRoom', { roomId, name: 'Cara' });
+    await sleep(30); // let Cara's lookup be the delayed one
+    const started = waitForEvent(players[0].socket, 'gameStarted');
+    players[0].socket.emit('startGame');
+
+    expect((await refused).message).toBe('Game already started. Cannot join.');
+    await started;
+    await sleep(100);
+    expect(lists.some((l) => l.players.some((p) => p.name === 'Cara'))).toBe(false);
+  });
+
+  it('counts only players still seated when the host starts', async () => {
+    const { players } = await setupRoom(['Alice', 'Bob', 'Cara']);
+    const original = vi.mocked(joinRoomRecord).getMockImplementation()!;
+    vi.mocked(joinRoomRecord).mockImplementationOnce(async (id) => {
+      await sleep(150);
+      return original(id);
+    });
+
+    const started = collect(players[0].socket, 'gameStarted');
+    const failure = waitForEvent<{ message: string }>(players[0].socket, 'startGameError');
+    players[0].socket.emit('startGame');
+    await sleep(30);
+    dropClient(players[1].socket);
+    dropClient(players[2].socket);
+
+    expect((await failure).message).toBe('Need at least 2 connected players to start.');
+    expect(started).toHaveLength(0);
+  });
+
+  it('rate-limits startGame', async () => {
+    const { players } = await setupRoom(['Alice', 'Bob']);
+    vi.mocked(joinRoomRecord).mockClear();
+    for (let i = 0; i < 15; i++) players[1].socket.emit('startGame');
+    await sleep(200);
+    expect(vi.mocked(joinRoomRecord).mock.calls.length).toBeLessThanOrEqual(10);
+  });
+
   // ------------------------------------------------------------------
   // v2 gameplay: strokes, undo, hints, close guesses, guessed-only chat
   // ------------------------------------------------------------------

@@ -19,8 +19,10 @@ import {
   fillSchema,
   updateSettingsSchema,
   kickPlayerSchema,
+  startGameSchema,
   validateWithError,
 } from './validation/schemas';
+import { drawingOrderFor } from './game/turnOrder';
 import { buildWordPool, MIXED_WORDS, pickWordOptions, WORD_OPTION_COUNT, type Category } from './game/words';
 import {
   buildHint,
@@ -604,7 +606,7 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
           return;
         }
         // Refill the drawing order for the new round.
-        state.drawingOrder = players.map((p) => p.id).sort(() => Math.random() - 0.5);
+        state.drawingOrder = drawingOrderFor(players);
         startDrawingTurn(roomId);
       }
     }, 1000);
@@ -871,6 +873,11 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
           return;
         }
         const room = await joinRoom(roomId);
+        // The host may have started the game while the lookup was pending.
+        if (gameState[roomId]?.gameStarted) {
+          socket.emit('joinError', { message: 'Game already started. Cannot join.' });
+          return;
+        }
 
         // The room exists in MongoDB but not in memory: it emptied out earlier or
         // the server restarted. Rehydrate it from its persisted settings.
@@ -1064,42 +1071,48 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
       handleWordChosen(roomId, data.word);
     });
 
-    socket.on('startGame', async () => {
+    socket.on('startGame', async (payload) => {
+      if (validate(startGameSchema, payload) === null) return;
       const roomId = currentRoom;
       if (!roomId) return;
+      if (!(await isAllowed(settingsLimiter, socket.id))) return;
 
       try {
+        const roomInfo = await joinRoom(roomId);
+        // Read the roster only now: players may have left during the lookup.
         const players = rooms[roomId] || [];
         const host = players.find(p => p.id === socket.id);
-        const roomInfo = await joinRoom(roomId);
-        const connectedCount = players.filter((p) => p.connected).length;
+        const state = gameState[roomId];
+        if (!host || host.name !== roomInfo.hostName) return;
+        if (!state || state.gameStarted) return;
 
-        if (connectedCount >= 2 && host && host.name === roomInfo.hostName) {
-          const state = gameState[roomId];
-          if (!state || state.gameStarted) return;
-
-          // Create a unique game instance and shuffled drawing order for the first round.
-          state.gameId = randomUUID();
-          state.drawingOrder = [...players].map(p => p.id).sort(() => Math.random() - 0.5);
-          state.currentRound = 1;
-          state.gameStarted = true;
-          state.phase = 'intermission';
-          state.usedWords = new Set();
-          state.gallery = [];
-
-          playerPoints[roomId] = {};
-          players.forEach(p => {
-            playerPoints[roomId][p.name] = 0;
-          });
-          io.to(roomId).emit('pointsUpdate', playerPoints[roomId]);
-
-          io.to(roomId).emit('gameStarted', {
-            rounds: state.rounds,
-            timePerRound: state.timePerRound,
-          });
-
-          startDrawingTurn(roomId);
+        const drawingOrder = drawingOrderFor(players);
+        if (drawingOrder.length < 2) {
+          socket.emit('startGameError', { message: 'Need at least 2 connected players to start.' });
+          return;
         }
+
+        // Create a unique game instance and shuffled drawing order for the first round.
+        state.gameId = randomUUID();
+        state.drawingOrder = drawingOrder;
+        state.currentRound = 1;
+        state.gameStarted = true;
+        state.phase = 'intermission';
+        state.usedWords = new Set();
+        state.gallery = [];
+
+        playerPoints[roomId] = {};
+        players.filter((p) => p.connected).forEach(p => {
+          playerPoints[roomId][p.name] = 0;
+        });
+        io.to(roomId).emit('pointsUpdate', playerPoints[roomId]);
+
+        io.to(roomId).emit('gameStarted', {
+          rounds: state.rounds,
+          timePerRound: state.timePerRound,
+        });
+
+        startDrawingTurn(roomId);
       } catch (err) {
         logger.error({ err, roomId }, 'Failed to start game');
         socket.emit('startGameError', { message: 'Could not start the game. Please try again.' });

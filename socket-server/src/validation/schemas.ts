@@ -118,6 +118,9 @@ export const chooseWordSchema = z.object({
   round: z.number().int().min(1).max(10).optional(),
 });
 
+// startGame carries no data: the room comes from the socket, never the client.
+export const startGameSchema = z.object({}).strict().optional();
+
 export const clearCanvasSchema = z.object({
   roomId: roomIdField,
 });

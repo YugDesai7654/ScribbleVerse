@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { getPlaceholder, getRandomWords, calculateGuessPoints } from '../server';
 import { MIXED_WORDS } from '../game/words';
+import { drawingOrderFor, shuffle } from '../game/turnOrder';
 
 describe('getPlaceholder', () => {
   it('replaces each letter with an underscore', () => {
@@ -54,5 +55,26 @@ describe('calculateGuessPoints', () => {
     const early = calculateGuessPoints(60, 10);
     const late = calculateGuessPoints(60, 50);
     expect(early).toBeGreaterThan(late);
+  });
+});
+
+describe('drawingOrderFor', () => {
+  it('leaves out disconnected seats', () => {
+    const order = drawingOrderFor([{ id: 'a', connected: true }, { id: 'b', connected: false }, { id: 'c', connected: true }]);
+    expect(order.sort()).toEqual(['a', 'c']);
+  });
+  it('puts each player first about equally often', () => {
+    const counts: Record<string, number> = { a: 0, b: 0, c: 0 };
+    for (let i = 0; i < 6000; i++) counts[drawingOrderFor(['a', 'b', 'c'].map((id) => ({ id, connected: true })))[0]]++;
+    for (const n of Object.values(counts)) expect(n).toBeGreaterThan(1800); // 2000 +/- 10%
+  });
+});
+
+describe('shuffle', () => {
+  it('returns a permutation and leaves the input alone', () => {
+    const input = [1, 2, 3, 4];
+    const out = shuffle(input);
+    expect(out.sort()).toEqual([1, 2, 3, 4]);
+    expect(input).toEqual([1, 2, 3, 4]);
   });
 });
