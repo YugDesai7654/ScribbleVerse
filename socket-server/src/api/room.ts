@@ -47,3 +47,9 @@ export async function updateHost(roomId: string, newHostName: string) {
 export async function updateRoomSettings(roomId: string, settings: Partial<RoomSettings>) {
   return Room.findOneAndUpdate({ roomId }, { $set: settings }, { new: true });
 }
+
+// Push the TTL expiry out: called whenever a room is joined or its game starts,
+// so a room in active use is never deleted underneath its players.
+export async function touchRoom(roomId: string): Promise<void> {
+  await Room.updateOne({ roomId }, { $set: { createdAt: new Date() } });
+}

@@ -42,6 +42,23 @@ function writeToken(roomId: string, token: string | null) {
   }
 }
 
+/** One-shot proof that this tab created the room; see RoomPage. */
+const hostKey = (roomId: string) => `scribbleverse:host:${roomId}`
+function readHostToken(roomId: string) {
+  try {
+    return sessionStorage.getItem(hostKey(roomId)) || undefined
+  } catch {
+    return undefined
+  }
+}
+function clearHostToken(roomId: string) {
+  try {
+    sessionStorage.removeItem(hostKey(roomId))
+  } catch {
+    // Storage unavailable: nothing to remove.
+  }
+}
+
 /** What the room is doing right now, from this client's point of view. */
 type Phase = "lobby" | "choosing" | "drawing" | "summary" | "over"
 
@@ -122,7 +139,7 @@ export default function GameRoomPage() {
       // token lets the server hand back our seat instead of treating us as new.
       connect: () => {
         setSocketId(socket.id || "")
-        socket.emit("joinRoom", { roomId, name, reconnectToken: readToken(roomId) })
+        socket.emit("joinRoom", { roomId, name, reconnectToken: readToken(roomId), hostToken: readHostToken(roomId) })
       },
       disconnect: (reason: string) => {
         // Leaving or being kicked is deliberate; anything else is a dropped connection.
@@ -130,6 +147,7 @@ export default function GameRoomPage() {
       },
       joinRoomSuccess: (data: { reconnectToken?: string }) => {
         if (data.reconnectToken) writeToken(roomId, data.reconnectToken)
+        clearHostToken(roomId)
         setConnection("online")
       },
       joinError: (data: { message: string }) => {

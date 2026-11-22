@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Socket as ClientSocket } from 'socket.io-client';
 import { startTestServer, connectClient, waitForEvent } from './testUtils';
 import { signToken } from '../auth/jwt';
-import { joinRoom as joinRoomRecord } from '../api/room';
+import { createRoom as createRoomRecord, joinRoom as joinRoomRecord, touchRoom } from '../api/room';
 import { io as ioClient } from 'socket.io-client';
 
 const updateUserStats = vi.hoisted(() => vi.fn(async () => ({ id: 'authenticated-user' })));
@@ -37,6 +37,7 @@ vi.mock('../api/room', () => {
       if (!room) throw new Error('Room does not exist');
       return room;
     }),
+    touchRoom: vi.fn(async () => undefined),
     updateHost: vi.fn(async (roomId: string, newHostName: string) => {
       const room = store.get(roomId);
       if (!room) return null;
@@ -544,6 +545,82 @@ describe('game flow (Socket.IO integration)', () => {
     await sleep(300);
     expect(cleared.length).toBeGreaterThan(0);
     expect(cleared.length).toBeLessThanOrEqual(60);
+  });
+
+  // ------------------------------------------------------------------
+  // Host claim and room lifetime
+  // ------------------------------------------------------------------
+
+  /** Creates a room from a fresh socket and resolves with the socket, room id and host token. */
+  async function createAs(name: string, roomId = uniqueRoomId()) {
+    const socket = await join(testServer.url);
+    const created = waitForEvent<{ roomId: string; hostToken: string }>(socket, 'createRoomSuccess');
+    socket.emit('createRoom', { roomId, name, rounds: 1, timePerRound: 30 });
+    return { socket, roomId, hostToken: (await created).hostToken };
+  }
+
+  it('reserves the host name for the creator', async () => {
+    const { socket: alice, roomId, hostToken } = await createAs('Alice');
+    expect(hostToken).toEqual(expect.any(String));
+
+    const impostor = await join(testServer.url);
+    const refused = waitForEvent<{ message: string }>(impostor, 'joinError');
+    impostor.emit('joinRoom', { roomId, name: 'Alice' });
+    expect((await refused).message).toBe('Name already taken in this room.');
+
+    const list = waitForEvent<{ hostName: string }>(alice, 'playerList');
+    alice.emit('joinRoom', { roomId, name: 'Alice' });
+    expect((await list).hostName).toBe('Alice');
+  });
+
+  it('lets the creator take the host seat from a new socket with the host token', async () => {
+    const { roomId, hostToken } = await createAs('Alice');
+    const fresh = await join(testServer.url);
+    const list = waitForEvent<{ hostName: string; players: { name: string }[] }>(fresh, 'playerList');
+    const joined = waitForEvent(fresh, 'joinRoomSuccess');
+    fresh.emit('joinRoom', { roomId, name: 'Alice', hostToken });
+    await joined;
+    const { hostName, players } = await list;
+    expect(hostName).toBe('Alice');
+    expect(players.map((p) => p.name)).toContain('Alice');
+  });
+
+  it('refuses to create a room whose code is still live in memory', async () => {
+    const { roomId, players } = await setupRoom(['Alice', 'Bob']);
+    // Simulate the database record expiring while the room is still in memory.
+    vi.mocked(createRoomRecord).mockResolvedValueOnce({} as never);
+    const other = await join(testServer.url);
+    const failed = waitForEvent<{ message: string }>(other, 'createRoomError');
+    other.emit('createRoom', { roomId, name: 'Mallory', rounds: 1, timePerRound: 30 });
+    expect((await failed).message).toBe('Room already exists');
+
+    const cara = await join(testServer.url);
+    const list = waitForEvent<{ players: { name: string }[] }>(players[0].socket, 'playerList');
+    cara.emit('joinRoom', { roomId, name: 'Cara' });
+    expect((await list).players.map((p) => p.name)).toEqual(['Alice', 'Bob', 'Cara']);
+
+    // Drain the queued value if the fix never reached the database call.
+    const created = await createAs('Drain');
+    expect(created.hostToken).toEqual(expect.any(String));
+  });
+
+  it('hides database errors when creating a room', async () => {
+    vi.mocked(createRoomRecord).mockRejectedValueOnce(new Error('E11000 duplicate key error'));
+    const socket = await join(testServer.url);
+    const failed = waitForEvent<{ message: string }>(socket, 'createRoomError');
+    socket.emit('createRoom', { roomId: uniqueRoomId(), name: 'Alice', rounds: 1, timePerRound: 30 });
+    expect((await failed).message).toBe('Could not create the room. Please try again.');
+  });
+
+  it('refreshes the room record on join and start', async () => {
+    vi.mocked(touchRoom).mockClear();
+    const { roomId, players } = await setupRoom(['Alice', 'Bob']);
+    await vi.waitFor(() => expect(touchRoom).toHaveBeenCalledWith(roomId));
+    vi.mocked(touchRoom).mockClear();
+    const started = waitForEvent(players[0].socket, 'gameStarted');
+    players[0].socket.emit('startGame');
+    await started;
+    await vi.waitFor(() => expect(touchRoom).toHaveBeenCalledWith(roomId));
   });
 
   it('records a logged-in leaver as played, not won', async () => {

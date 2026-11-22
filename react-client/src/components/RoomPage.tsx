@@ -112,8 +112,14 @@ export default function RoomPage() {
     const clamp = (value: number, min: number, max: number, fallback: number) =>
       Number.isFinite(value) ? Math.min(max, Math.max(min, Math.round(value))) : fallback
 
-    const onSuccess = ({ roomId }: { roomId: string }) => {
+    const onSuccess = ({ roomId, hostToken }: { roomId: string; hostToken?: string }) => {
       socket.off("createRoomError", onError)
+      // The creator reconnects on a fresh socket; this proves they own the host's name.
+      try {
+        if (hostToken) sessionStorage.setItem(`scribbleverse:host:${roomId}`, hostToken)
+      } catch {
+        // Storage unavailable: the creator can still join, just without the reserved-name proof.
+      }
       socket.disconnect()
       triggerDoorOpen(`/room/${roomId}`)
     }

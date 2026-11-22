@@ -51,6 +51,14 @@ describe('joinRoomSchema', () => {
   it('rejects an empty name', () => {
     expect(validate(joinRoomSchema, { roomId: 'ABC123', name: '' })).toBeNull();
   });
+
+  it('accepts a host token of 1 to 64 characters and rejects others', () => {
+    const base = { roomId: 'ABC123', name: 'Bob' };
+    expect(validate(joinRoomSchema, { ...base, hostToken: 'x' })).not.toBeNull();
+    expect(validate(joinRoomSchema, { ...base, hostToken: 'x'.repeat(64) })).not.toBeNull();
+    expect(validate(joinRoomSchema, { ...base, hostToken: '' })).toBeNull();
+    expect(validate(joinRoomSchema, { ...base, hostToken: 'x'.repeat(65) })).toBeNull();
+  });
 });
 
 describe('chatMessageSchema', () => {

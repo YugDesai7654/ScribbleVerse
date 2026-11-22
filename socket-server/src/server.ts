@@ -7,7 +7,7 @@ import cookieParser from 'cookie-parser';
 import { parse as parseCookie } from 'cookie';
 import rateLimit from 'express-rate-limit';
 import { Server, Socket } from 'socket.io';
-import { createRoom, joinRoom, updateHost, updateRoomSettings, type RoomSettings } from './api/room';
+import { createRoom, joinRoom, touchRoom, updateHost, updateRoomSettings, type RoomSettings } from './api/room';
 import {
   validate,
   createRoomSchema,
@@ -269,6 +269,13 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
   const playerPoints: { [roomId: string]: { [playerName: string]: number } } = {};
   const correctGuessers: { [roomId: string]: Set<string> } = {};
   const emptyRoomTimers: { [roomId: string]: NodeJS.Timeout } = {};
+  /** Who may take the host's name until the creator has seated themselves. */
+  const hostClaims: { [roomId: string]: { name: string; token: string; socketId: string } } = {};
+
+  /** Refreshes a room's TTL; a failure must never break the join or start that triggered it. */
+  function keepRoomAlive(roomId: string) {
+    touchRoom(roomId).catch((err) => logger.error({ err, roomId }, 'Failed to refresh room expiry'));
+  }
   const wordState: {
     [roomId: string]: {
       currentWord: string | null;
@@ -333,6 +340,7 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
     delete wordState[roomId];
     delete strokes[roomId];
     delete kickedNames[roomId];
+    delete hostClaims[roomId];
     for (const player of rooms[roomId] ?? []) if (player.graceTimer) clearTimeout(player.graceTimer);
     delete rooms[roomId];
   }
@@ -827,15 +835,32 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
       // Logged-in users always join under their account name, so the host name
       // must match it or they'd be unable to start their own game.
       const hostName = socket.data.displayName || data.name;
+      // A code that is still live in memory belongs to a running room, even if
+      // its database record has expired.
+      if (gameState[roomId]) {
+        socket.emit('createRoomError', { message: 'Room already exists' });
+        return;
+      }
       try {
         const settings: RoomSettings = { ...DEFAULT_SETTINGS, rounds, timePerRound, maxPlayers };
         await createRoom(roomId, hostName, settings);
+        if (gameState[roomId]) {
+          socket.emit('createRoomError', { message: 'Room already exists' });
+          return;
+        }
         gameState[roomId] = newGameState(settings);
         playerPoints[roomId] = {};
+        const hostToken = randomUUID();
+        hostClaims[roomId] = { name: hostName, token: hostToken, socketId: socket.id };
         scheduleEmptyRoomCleanup(roomId);
-        socket.emit('createRoomSuccess', { roomId });
+        socket.emit('createRoomSuccess', { roomId, hostToken });
       } catch (err: any) {
-        socket.emit('createRoomError', { message: err.message });
+        if (err?.message === 'Room already exists') {
+          socket.emit('createRoomError', { message: 'Room already exists' });
+        } else {
+          logger.error({ err, roomId }, 'createRoom failed');
+          socket.emit('createRoomError', { message: 'Could not create the room. Please try again.' });
+        }
       }
     });
 
@@ -854,7 +879,7 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
       // different in-game name than their account, and means the client doesn't
       // need to be trusted for this at all.
       const name = socket.data.displayName || data.name;
-      const { roomId, reconnectToken } = data;
+      const { roomId, reconnectToken, hostToken } = data;
       try {
         // A valid token reclaims a held seat, even mid-game. A logged-in seat can
         // only be reclaimed by the same account, so a leaked token isn't enough.
@@ -905,6 +930,14 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
           return;
         }
 
+        // Until the creator has taken their seat, their name is reserved: only
+        // the creating socket, or a join carrying the host token, may use it.
+        const claim = hostClaims[roomId];
+        if (claim && name === claim.name && socket.id !== claim.socketId && hostToken !== claim.token) {
+          socket.emit('joinError', { message: 'Name already taken in this room.' });
+          return;
+        }
+
         const existingPlayer = rooms[roomId].find(p => p.name === name);
         if (existingPlayer) {
             socket.emit('joinError', { message: 'Name already taken in this room.' });
@@ -925,6 +958,8 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
         });
         socket.join(roomId);
         cancelEmptyRoomCleanup(roomId);
+        if (hostClaims[roomId]?.name === name) delete hostClaims[roomId];
+        keepRoomAlive(roomId);
 
         // A resumed room whose host is gone would otherwise be unstartable.
         let hostName = room.hostName;
@@ -943,7 +978,12 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
         socket.emit('joinRoomSuccess', { roomId, reconnectToken: token });
 
       } catch (err: any) {
-        socket.emit('joinError', { message: err.message });
+        if (err?.message === 'Room does not exist') {
+          socket.emit('joinError', { message: 'Room does not exist' });
+        } else {
+          logger.error({ err, roomId }, 'joinRoom failed');
+          socket.emit('joinError', { message: 'Could not join the room. Please try again.' });
+        }
       }
     });
 
@@ -1117,6 +1157,7 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
         state.currentRound = 1;
         state.gameStarted = true;
         state.phase = 'intermission';
+        keepRoomAlive(roomId);
         state.usedWords = new Set();
         state.gallery = [];
 

@@ -28,6 +28,8 @@ export const joinRoomSchema = z.object({
   name: nameField,
   // Secret handed out on the first join; lets a refreshed tab reclaim its seat.
   reconnectToken: z.string().min(1).max(64).optional(),
+  // Secret returned to the room's creator; lets them take the host's name from a new socket.
+  hostToken: z.string().min(1).max(64).optional(),
 });
 
 export const MAX_CUSTOM_WORDS = 200;
