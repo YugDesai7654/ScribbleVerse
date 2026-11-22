@@ -285,6 +285,8 @@ export default function GameRoomPage() {
 
     socket.on("pointsUpdate", (pts) => setPoints(pts))
 
+    socket.on("startGameError", (data: { message: string }) => alert(data.message))
+
     return () => {
       socket.off("connect")
       socket.off("joinRoomSuccess")
@@ -301,6 +303,7 @@ export default function GameRoomPage() {
       socket.off("roundStart")
       socket.off("roundStartingSoon")
       socket.off("pointsUpdate")
+      socket.off("startGameError")
 
       socket.disconnect()
       if (timerRef.current) clearInterval(timerRef.current)

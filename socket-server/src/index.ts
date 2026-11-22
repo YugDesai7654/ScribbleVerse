@@ -42,6 +42,12 @@ async function start() {
   process.once('SIGINT', () => void shutdown('SIGINT'));
 }
 
+// Last line of defence: a stray rejected promise (e.g. a transient MongoDB error
+// inside a socket handler) should be logged, not take down every live game.
+process.on('unhandledRejection', (reason) => {
+  logger.error({ err: reason }, 'Unhandled promise rejection');
+});
+
 start().catch((err: unknown) => {
   logger.fatal({ err }, 'Application startup failed');
   process.exit(1);

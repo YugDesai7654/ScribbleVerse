@@ -2,7 +2,17 @@ import { z, ZodSchema } from 'zod';
 
 // Shared building blocks
 const roomIdField = z.string().trim().min(4).max(8).regex(/^[A-Za-z0-9]+$/, 'Room code must be alphanumeric');
-const nameField = z.string().trim().min(1).max(20);
+// Names that would let a player impersonate server-generated chat messages.
+export const RESERVED_NAMES = ['system', 'server', 'admin', 'moderator'];
+export function isReservedName(name: string): boolean {
+  return RESERVED_NAMES.includes(name.trim().toLowerCase());
+}
+export const nameField = z
+  .string()
+  .trim()
+  .min(1)
+  .max(20)
+  .refine((name) => !isReservedName(name), 'That name is reserved');
 
 export const createRoomSchema = z.object({
   roomId: roomIdField,
@@ -38,7 +48,9 @@ export const drawingSchema = z.object({
 export const chooseWordSchema = z.object({
   roomId: roomIdField,
   word: z.string().trim().min(1).max(30),
-  round: z.number().int().min(1),
+  // Ignored by the server (the authoritative round comes from game state); kept
+  // optional so older clients that still send it continue to validate.
+  round: z.number().int().min(1).max(10).optional(),
 });
 
 export const clearCanvasSchema = z.object({

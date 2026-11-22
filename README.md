@@ -20,7 +20,7 @@ The project supports both guest play and persistent accounts. Authenticated play
 - Liveness/readiness endpoints and graceful process shutdown
 - Multi-stage Docker images and a complete local Docker Compose stack
 - GitHub Actions validation for backend, frontend, and Docker images
-- 40 backend unit and integration tests
+- 48 backend unit and integration tests
 
 ## Architecture
 
@@ -173,7 +173,7 @@ npm test
 npm audit --omit=dev
 ```
 
-The suite currently contains **40 tests** covering:
+The suite currently contains **48 tests** covering:
 
 - Scoring and word-placeholder logic
 - Zod validation boundaries
@@ -185,6 +185,8 @@ The suite currently contains **40 tests** covering:
 - Duplicate-name and room-cap rejection
 - Host reassignment
 - Authenticated result persistence and duplicate-start protection
+- Turn-lifecycle regressions: no scoring after the word is revealed, no stalls when players leave, no stale word-pick timers
+- Reserved-name rejection, foreign-Origin WebSocket rejection, room resume, and database-failure handling
 
 ### Frontend
 
