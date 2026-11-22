@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { getPlaceholder, getRandomWords, calculateGuessPoints } from '../server';
 import { MIXED_WORDS } from '../game/words';
+import { winnersOf } from '../game/results';
 import { drawingOrderFor, shuffle } from '../game/turnOrder';
 
 describe('getPlaceholder', () => {
@@ -76,5 +77,20 @@ describe('shuffle', () => {
     const out = shuffle(input);
     expect(out.sort()).toEqual([1, 2, 3, 4]);
     expect(input).toEqual([1, 2, 3, 4]);
+  });
+});
+
+describe('winnersOf', () => {
+  it('gives every tied top scorer the win', () => {
+    const scores = [{ name: 'Ann', score: 300 }, { name: 'Bo', score: 300 }, { name: 'Cy', score: 100 }];
+    expect(winnersOf(scores, new Set(['Ann', 'Bo', 'Cy']))).toEqual(new Set(['Ann', 'Bo']));
+  });
+  it('gives nobody the win when every score is 0', () => {
+    const scores = [{ name: 'Ann', score: 0 }, { name: 'Bo', score: 0 }];
+    expect(winnersOf(scores, new Set(['Ann', 'Bo'])).size).toBe(0);
+  });
+  it('ignores players who are no longer seated', () => {
+    const scores = [{ name: 'Gone', score: 900 }, { name: 'Ann', score: 300 }, { name: 'Bo', score: 100 }];
+    expect(winnersOf(scores, new Set(['Ann', 'Bo']))).toEqual(new Set(['Ann']));
   });
 });

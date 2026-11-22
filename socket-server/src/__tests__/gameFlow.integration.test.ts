@@ -495,6 +495,47 @@ describe('game flow (Socket.IO integration)', () => {
     expect(vi.mocked(joinRoomRecord).mock.calls.length).toBeLessThanOrEqual(10);
   });
 
+  it('records a logged-in leaver as played, not won', async () => {
+    const names = ['Alice', 'Bob', 'Cara'];
+    const sockets: ClientSocket[] = [];
+    for (const name of names) {
+      const token = signToken({ userId: `${name.toLowerCase()}-user-id`, displayName: name });
+      sockets.push(await join(testServer.url, `token=${token}`));
+    }
+    const roomId = uniqueRoomId();
+    sockets[0].emit('createRoom', { roomId, name: 'Alice', rounds: 1, timePerRound: 30 });
+    await waitForEvent(sockets[0], 'createRoomSuccess');
+    for (const socket of sockets) {
+      const joined = waitForEvent(socket, 'joinRoomSuccess');
+      socket.emit('joinRoom', { roomId, name: 'ignored' });
+      await joined;
+    }
+    const players = names.map((name, i) => ({ name, socket: sockets[i] }));
+
+    const { drawer, options, others } = await startAndGetDrawer(players);
+    const [stayer, leaver] = others;
+    const started = waitForEvent(stayer.socket, 'roundStart');
+    drawer.socket.emit('chooseWord', { roomId, word: options[0] });
+    await started;
+
+    dropClient(leaver.socket); // a deliberate leave
+    await sleep(100);
+
+    const nextOptions = waitForEvent<{ options: string[] }>(stayer.socket, 'wordOptions');
+    stayer.socket.emit('chatMessage', { roomId, user: stayer.name, text: options[0] });
+    const { options: nextWords } = await nextOptions;
+
+    const gameOver = waitForEvent(drawer.socket, 'gameOver');
+    const live = waitForEvent(drawer.socket, 'roundStart');
+    stayer.socket.emit('chooseWord', { roomId, word: nextWords[0] });
+    await live;
+    drawer.socket.emit('chatMessage', { roomId, user: drawer.name, text: nextWords[0] });
+    await gameOver;
+
+    await vi.waitFor(() => expect(createGameResult).toHaveBeenCalledTimes(3));
+    expect(createGameResult).toHaveBeenCalledWith(expect.objectContaining({ displayName: leaver.name, won: false }));
+  }, 30000);
+
   // ------------------------------------------------------------------
   // v2 gameplay: strokes, undo, hints, close guesses, guessed-only chat
   // ------------------------------------------------------------------

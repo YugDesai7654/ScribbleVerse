@@ -22,6 +22,7 @@ import {
   startGameSchema,
   validateWithError,
 } from './validation/schemas';
+import { winnersOf } from './game/results';
 import { drawingOrderFor } from './game/turnOrder';
 import { buildWordPool, MIXED_WORDS, pickWordOptions, WORD_OPTION_COUNT, type Category } from './game/words';
 import {
@@ -130,6 +131,7 @@ export type GameState = RoomSettings & {
   roundTimer?: NodeJS.Timeout; // Authoritative server-side timer for each turn
   intermissionTimer?: NodeJS.Timeout; // Delay/countdown between turns and rounds
   gameId?: string;
+  participants: Map<string, string | undefined>; // name -> userId for everyone who started this game
   turnGains: { [playerName: string]: number }; // Points earned in the current turn
   usedWords: Set<string>; // Words already drawn this game, never offered again
   gallery: GalleryEntry[]; // Each finished turn's drawing, sent with gameOver
@@ -295,6 +297,7 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
       turnGains: {},
       usedWords: new Set(),
       gallery: [],
+      participants: new Map(),
     };
   }
 
@@ -363,7 +366,8 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
     state.gallery = [];
     const completedGameId = state.gameId;
     if (completedGameId) {
-      persistGameResults(roomId, completedGameId, finalScores).catch((err) => {
+      const winners = winnersOf(finalScores, new Set((rooms[roomId] || []).map((p) => p.name)));
+      persistGameResults(roomId, completedGameId, finalScores, state.participants, winners).catch((err) => {
         logger.error({ err, roomId, gameId: completedGameId }, 'Unexpected game result persistence failure');
       });
     } else {
@@ -379,33 +383,32 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
   async function persistGameResults(
     roomId: string,
     gameId: string,
-    finalScores: { name: string; score: number }[]
+    finalScores: { name: string; score: number }[],
+    participants: Map<string, string | undefined>,
+    winners: Set<string>
   ) {
-    const players = rooms[roomId] || [];
-    const winnerName = finalScores[0]?.name;
-
-    for (const player of players) {
-      const userId = player.userId;
+    for (const [name, userId] of participants) {
       if (!userId) continue; // guest player, nothing to persist
 
-      const scoreEntry = finalScores.find((s) => s.name === player.name);
+      const scoreEntry = finalScores.find((s) => s.name === name);
       const score = scoreEntry?.score || 0;
+      const won = winners.has(name);
 
       try {
         await GameResult.create({
           gameId,
           userId,
-          displayName: player.name,
+          displayName: name,
           roomId,
           score,
-          won: player.name === winnerName,
+          won,
         });
 
         const updatedUser = await User.findByIdAndUpdate(userId, {
           $inc: {
             totalScore: score,
             gamesPlayed: 1,
-            gamesWon: player.name === winnerName ? 1 : 0,
+            gamesWon: won ? 1 : 0,
           },
         });
 
@@ -1111,8 +1114,10 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
         state.gallery = [];
 
         playerPoints[roomId] = {};
+        state.participants = new Map();
         players.filter((p) => p.connected).forEach(p => {
           playerPoints[roomId][p.name] = 0;
+          state.participants.set(p.name, p.userId);
         });
         io.to(roomId).emit('pointsUpdate', playerPoints[roomId]);
 
