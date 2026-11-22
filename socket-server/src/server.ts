@@ -668,6 +668,12 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
    * roster. A disconnected host still holds their seat (and the crown) during
    * the reconnect grace period.
    */
+  function rosterDrawerId(roomId: string): string | null {
+    const state = gameState[roomId];
+    if (!state?.gameStarted || (state.phase !== 'choosing' && state.phase !== 'drawing')) return null;
+    return state.drawingOrder[0] ?? null;
+  }
+
   async function syncRoster(roomId: string): Promise<string> {
     try {
       const room = await joinRoom(roomId);
@@ -680,11 +686,11 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
         systemMessage(roomId, `${newHost.name} is now the host.`);
         emitSettings(roomId, hostName);
       }
-      io.to(roomId).emit('playerList', { players: publicPlayers(rooms[roomId] || []), hostName });
+      io.to(roomId).emit('playerList', { players: publicPlayers(rooms[roomId] || []), hostName, drawerId: rosterDrawerId(roomId) });
       return hostName;
     } catch (err) {
       logger.error({ err, roomId }, 'Failed to update room roster');
-      io.to(roomId).emit('playerList', { players: publicPlayers(rooms[roomId] || []), hostName: '' });
+      io.to(roomId).emit('playerList', { players: publicPlayers(rooms[roomId] || []), hostName: '', drawerId: rosterDrawerId(roomId) });
       return '';
     }
   }
@@ -814,7 +820,7 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
       // socket, so its own disconnect handler will find nothing to remove.
       if (oldId !== socket.id) io.sockets.sockets.get(oldId)?.disconnect(true);
 
-      socket.emit('joinRoomSuccess', { roomId, reconnectToken: seat.reconnectToken, rejoined: true });
+      socket.emit('joinRoomSuccess', { roomId, reconnectToken: seat.reconnectToken, name: seat.name, rejoined: true });
       socket.emit('syncState', buildSyncState(roomId, socket.id));
       systemMessage(roomId, `${seat.name} reconnected.`);
       const hostName = await syncRoster(roomId);
@@ -973,11 +979,11 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
         if (!chatHistory[roomId]) chatHistory[roomId] = [];
         if (!playerPoints[roomId]) playerPoints[roomId] = {};
 
-        io.to(roomId).emit('playerList', { players: publicPlayers(rooms[roomId]), hostName });
+        io.to(roomId).emit('playerList', { players: publicPlayers(rooms[roomId]), hostName, drawerId: rosterDrawerId(roomId) });
         socket.emit('chatHistory', chatHistory[roomId]);
         io.to(roomId).emit('pointsUpdate', playerPoints[roomId]);
         emitSettings(roomId, hostName, socket);
-        socket.emit('joinRoomSuccess', { roomId, reconnectToken: token });
+        socket.emit('joinRoomSuccess', { roomId, reconnectToken: token, name });
 
       } catch (err: any) {
         if (err?.message === 'Room does not exist') {

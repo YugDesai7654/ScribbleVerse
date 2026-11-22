@@ -4,7 +4,7 @@ import { AnimatePresence, m } from "framer-motion"
 import { LogOut, MessageCircle, Users, Volume2, VolumeX } from "lucide-react"
 import socket from "../socket"
 import { useAuth } from "../contexts/useAuth"
-import type { ChatMessage, DrawOp, FillOp, GalleryEntry, Player, RoomSettings, Score, SettingsChange, StrokeSegment, SyncState, TurnSummary } from "../game/types"
+import type { ChatMessage, DrawOp, FillOp, GalleryEntry, Player, PlayerListPayload, RoomSettings, Score, SettingsChange, StrokeSegment, SyncState, TurnSummary } from "../game/types"
 import { BRUSH_SIZES, PALETTE } from "../game/types"
 import { isMuted, play, setMuted } from "../game/sound"
 import DrawingCanvas from "./game/DrawingCanvas"
@@ -70,6 +70,12 @@ export default function GameRoomPage() {
   const [guestName] = useState(() => localStorage.getItem("name") || "")
   // A logged-in account's display name always wins (the server enforces this too).
   const name = user?.displayName || guestName
+  // The name the server actually seated us under (see joinRoomSuccess). It can
+  // differ from `name` (e.g. /auth/me failed but the cookie logged us in).
+  const [seatName, setSeatName] = useState<string | null>(null)
+  const me = seatName ?? name
+  const meRef = useRef(me)
+  meRef.current = me
 
   const { toasts, push: toast } = useToasts()
   const [socketId, setSocketId] = useState("")
@@ -95,7 +101,7 @@ export default function GameRoomPage() {
   const [muted, setMutedState] = useState(isMuted)
   const [mobileTab, setMobileTab] = useState<"chat" | "players">("chat")
   const [settings, setSettings] = useState<RoomSettings | null>(null)
-  const [connection, setConnection] = useState<"online" | "reconnecting" | "failed">("online")
+  const [connection, setConnection] = useState<"online" | "reconnecting" | "failed" | "moved">("online")
 
   const [tool, setTool] = useState<Tool>("brush")
   const [color, setColor] = useState<string>(PALETTE[0])
@@ -107,9 +113,12 @@ export default function GameRoomPage() {
   const pointsRef = useRef<Record<string, number>>({})
 
   const isDrawer = !!socketId && drawerId === socketId
-  const iGuessed = guessed.has(name)
-  const isHost = hostName === name
+  const iGuessed = guessed.has(me)
+  const isHost = hostName === me
   const drawerName = players.find((p) => p.id === drawerId)?.name
+
+  const kickedRef = useRef(false)
+  const batcherRef = useRef<SegmentBatcher | null>(null)
 
   const stopTimer = () => {
     if (timerRef.current) window.clearInterval(timerRef.current)
@@ -135,6 +144,26 @@ export default function GameRoomPage() {
       }, 1000)
     }
 
+    kickedRef.current = false
+    let joinRetries = 0
+    let retryTimer: number | null = null
+
+    /** Back to a fresh lobby: used when the server seated us as a new player. */
+    const resetToLobby = () => {
+      stopTimer()
+      batcherRef.current?.dispose()
+      setTimer(0)
+      setPhase("lobby")
+      setDrawerId(null)
+      setSegments([])
+      setWordPattern("")
+      setWordOptions(null)
+      setSummary(null)
+      setCountdown(null)
+      setGameOver(null)
+      setGuessed(new Set())
+    }
+
     const handlers: Record<string, (...args: never[]) => void> = {
       // Fires on the first connect and after every automatic reconnect. The
       // token lets the server hand back our seat instead of treating us as new.
@@ -143,20 +172,42 @@ export default function GameRoomPage() {
         socket.emit("joinRoom", { roomId, name, reconnectToken: readToken(roomId), hostToken: readHostToken(roomId) })
       },
       disconnect: (reason: string) => {
-        // Leaving or being kicked is deliberate; anything else is a dropped connection.
-        if (reason !== "io client disconnect" && reason !== "io server disconnect") setConnection("reconnecting")
+        // Leaving is deliberate. A server disconnect without a kick means this
+        // seat was taken over (e.g. a duplicated tab); everything else is a drop.
+        if (reason === "io client disconnect") return
+        if (reason === "io server disconnect") {
+          if (!kickedRef.current) setConnection("moved")
+          return
+        }
+        setConnection("reconnecting")
       },
-      joinRoomSuccess: (data: { reconnectToken?: string }) => {
+      joinRoomSuccess: (data: { reconnectToken?: string; name?: string; rejoined?: boolean }) => {
         if (data.reconnectToken) writeToken(roomId, data.reconnectToken)
+        if (data.name) setSeatName(data.name)
         clearHostToken(roomId)
+        joinRetries = 0
         setConnection("online")
+        // A fresh seat (restart, expired seat) has no syncState: drop the old game.
+        if (!data.rejoined) resetToLobby()
       },
       joinError: (data: { message: string }) => {
+        // A brief limiter error must not cost us the seat: keep the token and retry.
+        if (data.message.startsWith("Too many requests") && readToken(roomId) && joinRetries < 3) {
+          joinRetries += 1
+          toast("Busy, retrying to join…", "error")
+          if (retryTimer) window.clearTimeout(retryTimer)
+          retryTimer = window.setTimeout(() => {
+            retryTimer = null
+            socket.emit("joinRoom", { roomId, name, reconnectToken: readToken(roomId), hostToken: readHostToken(roomId) })
+          }, 5000)
+          return
+        }
         writeToken(roomId, null)
         socket.disconnect()
         navigate("/room", { state: { roomCode: roomId, error: data.message } })
       },
       kicked: (data: { message: string }) => {
+        kickedRef.current = true
         writeToken(roomId, null)
         socket.disconnect()
         navigate("/room", { state: { error: data.message } })
@@ -193,9 +244,10 @@ export default function GameRoomPage() {
           setPhase("lobby")
         }
       },
-      playerList: (data: { players: Player[]; hostName: string }) => {
+      playerList: (data: PlayerListPayload) => {
         setPlayers(data.players)
         setHostName(data.hostName)
+        if (data.drawerId !== undefined) setDrawerId(data.drawerId)
       },
       gameStarted: (data: { rounds: number; timePerRound: number }) => {
         setTotalRounds(data.rounds)
@@ -255,7 +307,7 @@ export default function GameRoomPage() {
         setMessages((prev) => [...prev.slice(-199), message])
         if (message.correct) {
           setGuessed((prev) => new Set(prev).add(message.user))
-          if (message.user === name) {
+          if (message.user === meRef.current) {
             setConfettiKey((k) => k + 1)
             play("correct")
           } else {
@@ -264,7 +316,7 @@ export default function GameRoomPage() {
         }
       },
       closeGuess: ({ text }: { text: string }) => {
-        setMessages((prev) => [...prev, { user: name, text, timestamp: Date.now(), close: true }])
+        setMessages((prev) => [...prev, { user: meRef.current, text, timestamp: Date.now(), close: true }])
         play("close")
       },
       chatError: (data: { message: string }) => toast(data.message, "error"),
@@ -311,6 +363,7 @@ export default function GameRoomPage() {
       for (const [event, handler] of Object.entries(handlers)) socket.off(event, handler as (...args: unknown[]) => void)
       socket.io.off("reconnect_attempt", onReconnectAttempt)
       socket.io.off("reconnect_failed", onReconnectFailed)
+      if (retryTimer) window.clearTimeout(retryTimer)
       socket.disconnect()
       stopTimer()
     }
@@ -321,7 +374,6 @@ export default function GameRoomPage() {
 
   // One batcher per drawing turn. Pending segments are dropped when the turn
   // ends, never sent into the next one.
-  const batcherRef = useRef<SegmentBatcher | null>(null)
   useEffect(() => {
     if (!canDraw) return
     const batcher = createSegmentBatcher((batch) => socket.emit("drawingBatch", { roomId, segments: batch }))
@@ -392,11 +444,12 @@ export default function GameRoomPage() {
     setWordOptions(null)
   }
 
-  const sendChat = (text: string) => socket.emit("chatMessage", { roomId, user: name, text })
+  const sendChat = (text: string) => socket.emit("chatMessage", { roomId, user: me, text })
   const startGame = () => socket.emit("startGame")
   const changeSettings = (change: SettingsChange) => socket.emit("updateSettings", { roomId, ...change })
   const kick = (playerId: string) => socket.emit("kickPlayer", { roomId, playerId })
   const retryConnection = () => {
+    kickedRef.current = false
     setConnection("reconnecting")
     socket.connect()
   }
@@ -581,7 +634,7 @@ export default function GameRoomPage() {
       </div>
 
       <AnimatePresence>
-        {connection !== "online" && <ReconnectingOverlay failed={connection === "failed"} onRetry={retryConnection} onLeave={leave} />}
+        {connection !== "online" && <ReconnectingOverlay state={connection} onRetry={retryConnection} onLeave={leave} />}
       </AnimatePresence>
       <AnimatePresence>
         {countdown !== null && phase !== "over" && <CountdownOverlay seconds={countdown} />}

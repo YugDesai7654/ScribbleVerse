@@ -98,3 +98,6 @@ export type SyncState = {
   strokes: DrawOp[]
   chat: ChatMessage[]
 }
+
+/** Roster broadcast. `drawerId` is the current drawer's socket id while choosing/drawing, else null. */
+export type PlayerListPayload = { players: Player[]; hostName: string; drawerId?: string | null }

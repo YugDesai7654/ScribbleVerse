@@ -437,9 +437,10 @@ describe('game flow (Socket.IO integration)', () => {
     dana.emit('createRoom', { roomId, name: 'SomethingElse' });
     await waitForEvent(dana, 'createRoomSuccess');
     for (const [socket, name] of [[dana, 'ignored'], [eli, 'Eli']] as const) {
-      const joined = waitForEvent(socket, 'joinRoomSuccess');
+      const joined = waitForEvent<{ name: string }>(socket, 'joinRoomSuccess');
       socket.emit('joinRoom', { roomId, name });
-      await joined;
+      const confirmed = await joined;
+      expect(confirmed.name).toBe(socket === dana ? 'Dana' : 'Eli');
     }
 
     const started = waitForEvent(eli, 'gameStarted');
@@ -906,6 +907,16 @@ describe('game flow (Socket.IO integration)', () => {
     const relayed = waitForEvent<{ strokeId: string }>(others[0].socket, 'drawing');
     back.socket.emit('drawing', { roomId, strokeId: 'after', from: null, to: { x: 0.5, y: 0.5 }, color: '#000000', size: 8 });
     expect((await relayed).strokeId).toBe('after');
+  });
+
+  it('tells everyone the new drawer socket after the drawer reconnects', async () => {
+    const { roomId, drawer, others } = await liveTurn();
+    dropNetwork(drawer.socket);
+    await sleep(100);
+
+    const lists = collect<{ drawerId: string | null }>(others[0].socket, 'playerList');
+    const back = await rejoin(roomId, drawer.name, drawer.token);
+    await vi.waitFor(() => expect(lists.some((l) => l.drawerId === back.socket.id)).toBe(true));
   });
 
   it('releases a dropped drawer seat after the grace period and skips their turn', async () => {

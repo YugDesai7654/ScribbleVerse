@@ -215,26 +215,37 @@ export function LobbyPanel({
   )
 }
 
-/** Shown while Socket.IO retries a dropped connection; the server holds our seat meanwhile. */
-export function ReconnectingOverlay({ failed, onRetry, onLeave }: { failed: boolean; onRetry: () => void; onLeave: () => void }) {
+/**
+ * Shown while Socket.IO retries a dropped connection (the server holds our seat
+ * meanwhile), after it gave up, or when the seat moved to another tab. Leave is
+ * always available.
+ */
+export function ReconnectingOverlay({
+  state, onRetry, onLeave,
+}: { state: "reconnecting" | "failed" | "moved"; onRetry: () => void; onLeave: () => void }) {
+  const title = state === "failed" ? "Connection lost" : state === "moved" ? "This seat is open in another tab" : "Reconnecting…"
+  const detail =
+    state === "failed"
+      ? "We couldn't get back to the room."
+      : state === "moved"
+        ? "Rejoin to take the seat back here."
+        : "Your seat and score are held for a few seconds."
   return (
     <Fade className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-[2px]">
-      <div className={card} role="alertdialog" aria-live="assertive" aria-label={failed ? "Connection lost" : "Reconnecting"}>
+      <div className={card} role="alertdialog" aria-live="assertive" aria-label={title}>
         <WifiOff className="mx-auto h-10 w-10 text-gold" />
-        <p className="mt-3 font-display text-2xl font-bold text-cream">{failed ? "Connection lost" : "Reconnecting…"}</p>
-        <p className="mt-1 text-sm text-cream/60">
-          {failed ? "We couldn't get back to the room." : "Your seat and score are held for a few seconds."}
-        </p>
-        {failed && (
-          <div className="mt-5 flex flex-wrap justify-center gap-3">
+        <p className="mt-3 font-display text-2xl font-bold text-cream">{title}</p>
+        <p className="mt-1 text-sm text-cream/60">{detail}</p>
+        <div className="mt-5 flex flex-wrap justify-center gap-3">
+          {state !== "reconnecting" && (
             <button type="button" onClick={onRetry} className={primary}>
-              <RotateCcw className="h-4 w-4" /> Try again
+              <RotateCcw className="h-4 w-4" /> {state === "moved" ? "Rejoin" : "Try again"}
             </button>
-            <button type="button" onClick={onLeave} className={secondary}>
-              <LogOut className="h-4 w-4" /> Leave
-            </button>
-          </div>
-        )}
+          )}
+          <button type="button" onClick={onLeave} className={secondary}>
+            <LogOut className="h-4 w-4" /> Leave
+          </button>
+        </div>
       </div>
     </Fade>
   )
