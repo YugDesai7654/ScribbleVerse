@@ -153,12 +153,16 @@ const NEXT_TURN_DELAY_MS = 5_000;
 const ROUND_COUNTDOWN_SECONDS = 5;
 /** How long a dropped player's seat is held during a game before their turn is skipped. */
 export const RECONNECT_GRACE_MS = 30_000;
+/** How long the creator's host-name reservation lasts if they never take their seat. */
+export const HOST_CLAIM_MS = 2 * 60 * 1000;
 /** Recent chat sent to a reconnecting player. */
 const SYNC_CHAT_MESSAGES = 50;
 
 export type AppOptions = {
   /** Overridable so tests don't have to wait out the real grace period. */
   reconnectGraceMs?: number;
+  /** How long the creator's claim on the host name lasts. Overridable for tests. */
+  hostClaimMs?: number;
 };
 
 /** Reads TRUST_PROXY ("1", "2", "true", "loopback", ...) into an Express trust proxy value. */
@@ -177,7 +181,7 @@ function trustProxySetting(raw: string | undefined): boolean | number | string |
  * process entrypoint). Keeping this side-effect-free is what makes it possible
  * to spin up an independent, isolated instance per test.
  */
-export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions = {}) {
+export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS, hostClaimMs = HOST_CLAIM_MS }: AppOptions = {}) {
   // --- Server and CORS Setup ---
   const app = express();
   app.disable('x-powered-by');
@@ -271,7 +275,7 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
   const correctGuessers: { [roomId: string]: Set<string> } = {};
   const emptyRoomTimers: { [roomId: string]: NodeJS.Timeout } = {};
   /** Who may take the host's name until the creator has seated themselves. */
-  const hostClaims: { [roomId: string]: { name: string; token: string; socketId: string } } = {};
+  const hostClaims: { [roomId: string]: { name: string; token: string; socketId: string; createdAt: number } } = {};
 
   /** Refreshes a room's TTL; a failure must never break the join or start that triggered it. */
   function keepRoomAlive(roomId: string) {
@@ -404,10 +408,14 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
       const won = winners.has(name);
 
       try {
+        // The login's name can be stale after an account rename; the account's
+        // current name keeps the leaderboard attached to the right profile.
+        const account = await User.findById(userId).select('displayName');
+        const currentName = account?.displayName || name;
         await GameResult.create({
           gameId,
           userId,
-          displayName: name,
+          displayName: currentName,
           roomId,
           score,
           won,
@@ -513,7 +521,13 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
         const index = pickHintIndex(word, words.revealed);
         if (index === null) return;
         words.revealed.add(index);
-        io.to(roomId).except(state.drawingOrder[0] ?? drawerId).emit('hint', { word: buildHint(word, words.revealed) });
+        const hintWord = buildHint(word, words.revealed);
+        // Skip the drawer and anyone who already guessed: they hold the full word.
+        for (const seat of rooms[roomId] || []) {
+          if (!seat.connected || seat.id === (state.drawingOrder[0] ?? drawerId)) continue;
+          if (correctGuessers[roomId]?.has(seat.name)) continue;
+          io.to(seat.id).emit('hint', { word: hintWord });
+        }
       }, delay)
     );
 
@@ -812,13 +826,21 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
 
       const state = gameState[roomId];
       if (state) state.drawingOrder = state.drawingOrder.map((id) => (id === oldId ? socket.id : id));
+      // A seat that appeared after the game began still counts as a participant.
+      if (state?.gameStarted && !state.participants.has(seat.name)) state.participants.set(seat.name, seat.userId);
       socket.join(roomId);
       cancelEmptyRoomCleanup(roomId);
 
       // The old socket may still look alive (e.g. the server hasn't noticed a
       // dropped network yet, or a duplicated tab). Its seat now belongs to this
       // socket, so its own disconnect handler will find nothing to remove.
-      if (oldId !== socket.id) io.sockets.sockets.get(oldId)?.disconnect(true);
+      if (oldId !== socket.id) {
+        const stale = io.sockets.sockets.get(oldId);
+        // Tells the old tab it was replaced (not that the server went away), so
+        // it doesn't try to reconnect and fight for the seat.
+        stale?.emit('sessionMoved');
+        stale?.disconnect(true);
+      }
 
       socket.emit('joinRoomSuccess', { roomId, reconnectToken: seat.reconnectToken, name: seat.name, rejoined: true });
       socket.emit('syncState', buildSyncState(roomId, socket.id));
@@ -858,7 +880,7 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
         gameState[roomId] = newGameState(settings);
         playerPoints[roomId] = {};
         const hostToken = randomUUID();
-        hostClaims[roomId] = { name: hostName, token: hostToken, socketId: socket.id };
+        hostClaims[roomId] = { name: hostName, token: hostToken, socketId: socket.id, createdAt: Date.now() };
         scheduleEmptyRoomCleanup(roomId);
         socket.emit('createRoomSuccess', { roomId, hostToken });
       } catch (err: any) {
@@ -940,6 +962,9 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
 
         // Until the creator has taken their seat, their name is reserved: only
         // the creating socket, or a join carrying the host token, may use it.
+        if (hostClaims[roomId] && Date.now() - hostClaims[roomId].createdAt >= hostClaimMs) {
+          delete hostClaims[roomId]; // the creator never came back for their seat
+        }
         const claim = hostClaims[roomId];
         if (claim && name === claim.name && socket.id !== claim.socketId && hostToken !== claim.token) {
           socket.emit('joinError', { message: 'Name already taken in this room.' });

@@ -118,7 +118,7 @@ export default function RoomPage() {
       try {
         if (hostToken) sessionStorage.setItem(`scribbleverse:host:${roomId}`, hostToken)
       } catch {
-        // Storage unavailable: the creator can still join, just without the reserved-name proof.
+        // Storage unavailable: the host name stays reserved for a couple of minutes, then anyone can take it.
       }
       socket.disconnect()
       triggerDoorOpen(`/room/${roomId}`)

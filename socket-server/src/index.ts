@@ -5,12 +5,17 @@ import { createApp } from './server';
 import { connectDB, disconnectDB } from './dbConnect/dbconnect';
 import { loadEnvironment } from './env';
 import { logger } from './logger';
+import { User } from './model/user';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
 async function start() {
   const env = loadEnvironment();
   await connectDB(env.MONGO_URI);
+  // A failed unique-index build (old duplicate display names) is otherwise silent.
+  User.init().catch((err: unknown) => {
+    logger.error({ err }, 'User indexes failed to build; run npm run migrate:display-names and restart');
+  });
 
   const { server, io } = createApp();
 

@@ -25,6 +25,7 @@ router.get('/:displayName', async (req, res) => {
   try {
     const user = await User.findOne({ displayName: parsed.data.displayName })
       .collation({ locale: 'en', strength: 2 })
+      .sort({ createdAt: 1, _id: 1 })
       .select('displayName createdAt')
       .lean<{ _id: unknown; displayName: string; createdAt: Date }>();
     if (!user) {

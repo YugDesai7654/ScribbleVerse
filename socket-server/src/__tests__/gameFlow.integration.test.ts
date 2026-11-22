@@ -7,6 +7,8 @@ import { io as ioClient } from 'socket.io-client';
 
 const updateUserStats = vi.hoisted(() => vi.fn(async () => ({ id: 'authenticated-user' })));
 const createGameResult = vi.hoisted(() => vi.fn(async () => ({ id: 'game-result' })));
+/** Current account display names by user id, as the database would hold them. */
+const accountNames = vi.hoisted(() => new Map<string, string>());
 
 // Mock the MongoDB-backed room repository so these tests never need a real
 // database — they exercise the actual Socket.IO handlers in `server.ts`
@@ -14,6 +16,9 @@ const createGameResult = vi.hoisted(() => vi.fn(async () => ({ id: 'game-result'
 vi.mock('../model/user', () => ({
   User: {
     findByIdAndUpdate: updateUserStats,
+    findById: (id: string) => ({
+      select: async () => (accountNames.has(id) ? { displayName: accountNames.get(id) } : null),
+    }),
   },
 }));
 
@@ -71,6 +76,7 @@ describe('game flow (Socket.IO integration)', () => {
   beforeEach(async () => {
     updateUserStats.mockClear();
     createGameResult.mockClear();
+    accountNames.clear();
     testServer = await startTestServer({ reconnectGraceMs: GRACE_MS });
   });
 
@@ -1116,4 +1122,106 @@ describe('game flow (Socket.IO integration)', () => {
       },
     ]);
   }, 20000);
+
+  // ------------------------------------------------------------------
+  // Final-review fixes
+  // ------------------------------------------------------------------
+
+  it('tells a replaced socket its seat moved before disconnecting it', async () => {
+    const { roomId, others } = await liveTurn();
+    const [guesser] = others;
+    const moved = waitForEvent(guesser.socket, 'sessionMoved');
+    const closed = waitForEvent<string>(guesser.socket, 'disconnect');
+    const back = await rejoin(roomId, guesser.name, guesser.token);
+    await moved;
+    expect(await closed).toBe('io server disconnect');
+    expect(back.joined).toMatchObject({ rejoined: true });
+  });
+
+  it('refuses the host name with a wrong host token while the claim is live', async () => {
+    const { roomId } = await createAs('Alice');
+    const impostor = await join(testServer.url);
+    const refused = waitForEvent<{ message: string }>(impostor, 'joinError');
+    impostor.emit('joinRoom', { roomId, name: 'Alice', hostToken: 'not-the-token' });
+    expect((await refused).message).toBe('Name already taken in this room.');
+  });
+
+  it('lets the host name be taken once the claim has expired', async () => {
+    const short = await startTestServer({ reconnectGraceMs: GRACE_MS, hostClaimMs: 150 });
+    try {
+      const creator = await connectClient(short.url);
+      clients.push(creator);
+      const roomId = uniqueRoomId();
+      const created = waitForEvent(creator, 'createRoomSuccess');
+      creator.emit('createRoom', { roomId, name: 'Alice', rounds: 1, timePerRound: 30 });
+      await created;
+      await sleep(300);
+
+      const other = await connectClient(short.url);
+      clients.push(other);
+      const joined = waitForEvent(other, 'joinRoomSuccess');
+      other.emit('joinRoom', { roomId, name: 'Alice' });
+      await joined;
+    } finally {
+      await short.close();
+    }
+  });
+
+  it('saves a renamed account under its current display name', async () => {
+    const names = ['Alice', 'Bob'];
+    const sockets: ClientSocket[] = [];
+    for (const name of names) {
+      const token = signToken({ userId: `${name.toLowerCase()}-user-id`, displayName: name });
+      sockets.push(await join(testServer.url, `token=${token}`));
+    }
+    accountNames.set('alice-user-id', 'AliceRenamed');
+    accountNames.set('bob-user-id', 'Bob');
+    const roomId = uniqueRoomId();
+    sockets[0].emit('createRoom', { roomId, name: 'Alice', rounds: 1, timePerRound: 30 });
+    await waitForEvent(sockets[0], 'createRoomSuccess');
+    for (const socket of sockets) {
+      const joined = waitForEvent(socket, 'joinRoomSuccess');
+      socket.emit('joinRoom', { roomId, name: 'ignored' });
+      await joined;
+    }
+    const players = names.map((name, i) => ({ name, socket: sockets[i] }));
+    const { drawer, options, others } = await startAndGetDrawer(players);
+    const live = waitForEvent(others[0].socket, 'roundStart');
+    drawer.socket.emit('chooseWord', { roomId, word: options[0] });
+    await live;
+    const nextOptions = waitForEvent<{ options: string[] }>(drawer.socket, 'wordOptions');
+    const nextOptions2 = waitForEvent<{ options: string[] }>(others[0].socket, 'wordOptions');
+    others[0].socket.emit('chatMessage', { roomId, user: others[0].name, text: options[0] });
+    const second = await Promise.race([
+      nextOptions.then((d) => ({ who: drawer, d })),
+      nextOptions2.then((d) => ({ who: others[0], d })),
+    ]);
+    const guesser = second.who === drawer ? others[0] : drawer;
+    const gameOver = waitForEvent(guesser.socket, 'gameOver');
+    const live2 = waitForEvent(guesser.socket, 'roundStart');
+    second.who.socket.emit('chooseWord', { roomId, word: second.d.options[0] });
+    await live2;
+    guesser.socket.emit('chatMessage', { roomId, user: guesser.name, text: second.d.options[0] });
+    await gameOver;
+
+    await vi.waitFor(() => expect(createGameResult).toHaveBeenCalledTimes(2));
+    expect(createGameResult).toHaveBeenCalledWith(expect.objectContaining({ userId: 'alice-user-id', displayName: 'AliceRenamed' }));
+    expect(createGameResult).toHaveBeenCalledWith(expect.objectContaining({ userId: 'bob-user-id', displayName: 'Bob' }));
+  }, 30000);
+
+  it('does not send a hint to a guesser who already has the full word', async () => {
+    const { roomId, drawer, others, word } = await liveTurn({ rounds: 1, timePerRound: 10 });
+    const [solver, waiting] = others;
+    const correct = waitForEvent(waiting.socket, 'pointsUpdate');
+    solver.socket.emit('chatMessage', { roomId, user: solver.name, text: word });
+    await correct;
+
+    const solverHints = collect(solver.socket, 'hint');
+    const drawerHints = collect(drawer.socket, 'hint');
+    const hint = await waitForEvent(waiting.socket, 'hint');
+    expect(hint).toBeTruthy();
+    await sleep(150);
+    expect(solverHints).toEqual([]);
+    expect(drawerHints).toEqual([]);
+  }, 15000);
 });

@@ -119,6 +119,7 @@ export default function GameRoomPage() {
   const drawerName = players.find((p) => p.id === drawerId)?.name
 
   const kickedRef = useRef(false)
+  const movedRef = useRef(false) // the server told us another tab took this seat
   const batcherRef = useRef<SegmentBatcher | null>(null)
 
   const connectedCount = players.filter((p) => p.connected !== false).length
@@ -150,6 +151,7 @@ export default function GameRoomPage() {
     }
 
     kickedRef.current = false
+    movedRef.current = false
     let joinRetries = 0
     let retryTimer: number | null = null
 
@@ -173,18 +175,30 @@ export default function GameRoomPage() {
       // Fires on the first connect and after every automatic reconnect. The
       // token lets the server hand back our seat instead of treating us as new.
       connect: () => {
+        if (retryTimer) window.clearTimeout(retryTimer)
+        retryTimer = null
         setSocketId(socket.id || "")
         socket.emit("joinRoom", { roomId, name, reconnectToken: readToken(roomId), hostToken: readHostToken(roomId) })
       },
       disconnect: (reason: string) => {
-        // Leaving is deliberate. A server disconnect without a kick means this
-        // seat was taken over (e.g. a duplicated tab); everything else is a drop.
+        // Leaving is deliberate. A server disconnect is a kick, a seat taken
+        // over by another tab (sessionMoved), or the server restarting.
         if (reason === "io client disconnect") return
         if (reason === "io server disconnect") {
-          if (!kickedRef.current) setConnection("moved")
+          if (kickedRef.current) return
+          if (movedRef.current) {
+            setConnection("moved")
+            return
+          }
+          // Socket.IO doesn't reconnect after a server-side disconnect by itself.
+          setConnection("reconnecting")
+          socket.connect()
           return
         }
         setConnection("reconnecting")
+      },
+      sessionMoved: () => {
+        movedRef.current = true
       },
       joinRoomSuccess: (data: { reconnectToken?: string; name?: string; rejoined?: boolean }) => {
         if (data.reconnectToken) writeToken(roomId, data.reconnectToken)
@@ -196,6 +210,8 @@ export default function GameRoomPage() {
         if (!data.rejoined) resetToLobby()
       },
       joinError: (data: { message: string }) => {
+        // A duplicate join on a socket that is already seated changes nothing.
+        if (data.message === "Already in a room.") return
         // A brief limiter error must not cost us the seat: keep the token and retry.
         if (data.message.startsWith("Too many requests") && readToken(roomId) && joinRetries < 3) {
           joinRetries += 1
@@ -456,6 +472,7 @@ export default function GameRoomPage() {
   const kick = (playerId: string) => socket.emit("kickPlayer", { roomId, playerId })
   const retryConnection = () => {
     kickedRef.current = false
+    movedRef.current = false
     setConnection("reconnecting")
     socket.connect()
   }
