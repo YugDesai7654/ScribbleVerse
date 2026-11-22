@@ -1,44 +1,36 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import type React from "react"
-import type { Point, StrokeSegment } from "../../game/types"
+import type { DrawOp, FillOp, Point, StrokeSegment } from "../../game/types"
+import type { Tool } from "../../game/utils"
+import { paintAll, paintOp } from "../../game/render"
 
 const ASPECT = 4 / 3
 /** Ignore pointer moves smaller than this (normalised) to keep traffic under the server's rate limit. */
 const MIN_STEP = 0.003
 
 interface DrawingCanvasProps {
-  segments: StrokeSegment[]
+  ops: DrawOp[]
   canDraw: boolean
+  tool: Tool
   color: string
   size: number
   onSegment: (segment: StrokeSegment) => void
+  onFill: (fill: FillOp) => void
 }
 
 let strokeCounter = 0
 const newStrokeId = () => `${Date.now().toString(36)}-${(strokeCounter++).toString(36)}`
-
-function drawSegment(ctx: CanvasRenderingContext2D, segment: StrokeSegment, width: number, height: number) {
-  const from = segment.from ?? segment.to
-  ctx.beginPath()
-  ctx.strokeStyle = segment.color
-  ctx.lineWidth = Math.max(1, (segment.size * width) / 1000)
-  ctx.lineCap = "round"
-  ctx.lineJoin = "round"
-  ctx.moveTo(from.x * width, from.y * height)
-  ctx.lineTo(segment.to.x * width, segment.to.y * height)
-  ctx.stroke()
-}
 
 /**
  * Responsive 4:3 canvas. Strokes are stored in normalised coordinates, so the
  * same drawing renders correctly on a phone and a 4K monitor. New segments are
  * painted incrementally; a full repaint only happens on resize, undo or clear.
  */
-export default function DrawingCanvas({ segments, canDraw, color, size, onSegment }: DrawingCanvasProps) {
+export default function DrawingCanvas({ ops, canDraw, tool, color, size, onSegment, onFill }: DrawingCanvasProps) {
   const wrapperRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [box, setBox] = useState({ width: 0, height: 0 })
-  const painted = useRef<StrokeSegment[]>([])
+  const painted = useRef<DrawOp[]>([])
   const active = useRef<{ strokeId: string; last: Point } | null>(null)
 
   // Fit the largest 4:3 rectangle into the available space.
@@ -72,15 +64,15 @@ export default function DrawingCanvas({ segments, canDraw, color, size, onSegmen
     const ctx = canvasRef.current?.getContext("2d")
     if (!ctx || !box.width) return
     const prev = painted.current
-    const isAppend = segments.length >= prev.length && prev.every((segment, i) => segments[i] === segment)
+    // After a resize `painted` is empty, so this also repaints the white background.
+    const isAppend = prev.length > 0 && ops.length >= prev.length && prev.every((op, i) => ops[i] === op)
     if (!isAppend) {
-      ctx.clearRect(0, 0, box.width, box.height)
-      segments.forEach((segment) => drawSegment(ctx, segment, box.width, box.height))
+      paintAll(ctx, ops, box.width, box.height)
     } else {
-      for (let i = prev.length; i < segments.length; i++) drawSegment(ctx, segments[i], box.width, box.height)
+      for (let i = prev.length; i < ops.length; i++) paintOp(ctx, ops[i], box.width, box.height)
     }
-    painted.current = segments
-  }, [segments, box])
+    painted.current = ops
+  }, [ops, box])
 
   const toPoint = useCallback((e: React.PointerEvent<HTMLCanvasElement>): Point => {
     const rect = e.currentTarget.getBoundingClientRect()
@@ -93,6 +85,10 @@ export default function DrawingCanvas({ segments, canDraw, color, size, onSegmen
     e.currentTarget.setPointerCapture(e.pointerId)
     const point = toPoint(e)
     const strokeId = newStrokeId()
+    if (tool === "fill") {
+      onFill({ type: "fill", strokeId, x: point.x, y: point.y, color })
+      return
+    }
     active.current = { strokeId, last: point }
     onSegment({ strokeId, from: null, to: point, color, size }) // a dot for single taps
   }
@@ -119,7 +115,7 @@ export default function DrawingCanvas({ segments, canDraw, color, size, onSegmen
       <canvas
         ref={canvasRef}
         style={{ width: box.width, height: box.height, touchAction: "none" }}
-        className={`bg-white rounded-xl shadow-[0_8px_30px_rgba(0,0,0,0.45)] ${canDraw ? "cursor-crosshair" : "cursor-default"}`}
+        className={`bg-white rounded-xl shadow-[0_8px_30px_rgba(0,0,0,0.45)] ${canDraw ? (tool === "fill" ? "cursor-cell" : "cursor-crosshair") : "cursor-default"}`}
         onPointerDown={handleDown}
         onPointerMove={handleMove}
         onPointerUp={handleUp}

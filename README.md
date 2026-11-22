@@ -2,9 +2,24 @@
 
 ScribbleVerse is a real-time multiplayer drawing and guessing game built with React, TypeScript, Express, Socket.IO, and MongoDB. Players create private rooms, take turns drawing server-selected words, guess through live chat, and compete for points across configurable rounds.
 
-The project supports both guest play and persistent accounts. Authenticated players receive cumulative profile statistics and one leaderboard entry for every completed game.
+The project supports both guest play and persistent accounts. Logged-in players get a profile page with their stats and game history, and appear on all-time, weekly and daily leaderboards.
 
 ## Highlights
+
+### Gameplay (v2)
+
+- Drawing tools: 12 colours, 4 brush sizes, eraser, **fill bucket**, undo and clear, with keyboard shortcuts (B, E, F, `[`, `]`, Ctrl/Cmd+Z)
+- Strokes are stored in normalised 0..1 coordinates, so a drawing looks the same on a phone and a 4K screen
+- Progressive letter hints, private "you're close" nudges, and a separate chat for players who already guessed
+- **Reconnect after a refresh or network drop**: your seat, score and turn are held for 30 seconds, and the canvas is replayed when you return
+- Six word packs (60+ words each) plus custom words from the host; no word repeats within a game
+- Lobby settings the host can change live (rounds, time, max players, category, custom words) and a kick button
+- **End-of-game gallery** of every drawing, each downloadable as a PNG
+- **Profiles** at `/profile` (yours, with full paginated history) and `/u/:displayName` (public, read-only)
+- **Leaderboard tabs**: all time, this week, today
+- Light and dark themes, an animated replay of a real round on the home page, and phone-friendly layouts
+
+### Platform
 
 - Real-time room, drawing, chat, scoring, timer, and turn synchronization with Socket.IO
 - Server-authoritative game rules and identity checks
@@ -13,14 +28,14 @@ The project supports both guest play and persistent accounts. Authenticated play
 - Guest mode with no account requirement
 - Email/password accounts with bcrypt password hashing
 - Persistent JWT authentication through secure, httpOnly cookies
-- Per-game authenticated leaderboard with duplicate-result protection
+- Leaderboards built with MongoDB aggregations, with duplicate-result protection
 - Zod validation for untrusted Socket.IO and HTTP payloads
 - Per-IP and per-socket rate limiting
 - Structured Pino logs with credentials, cookies, and tokens redacted
 - Liveness/readiness endpoints and graceful process shutdown
 - Multi-stage Docker images and a complete local Docker Compose stack
 - GitHub Actions validation for backend, frontend, and Docker images
-- 48 backend unit and integration tests
+- 103 backend unit and integration tests, including profile and leaderboard aggregations against an in-memory MongoDB
 
 ## Architecture
 
@@ -47,7 +62,7 @@ Live room state—players, drawing order, current word, scores, and timers—is 
 - React Router
 - Socket.IO Client
 - Tailwind CSS
-- Framer Motion and Lucide React
+- Framer Motion (loaded lazily through `LazyMotion`) and Lucide React
 
 ### Backend
 
@@ -142,15 +157,37 @@ npm run dev
 
 Never commit real database credentials, JWT secrets, or cloud credentials.
 
-## Authentication and leaderboard behavior
+## Authentication, profiles and leaderboard
 
 - Registration and login issue a seven-day JWT in an httpOnly cookie.
 - REST requests use browser credentials, and Socket.IO sends the same cookie during its handshake.
 - Logged-in players use their account display name inside game rooms.
 - Guest players can use the full game flow but do not create persistent statistics.
-- Every completed authenticated game creates an individual leaderboard record.
-- The leaderboard is available only to authenticated users; logged-out visitors are redirected to login and returned afterward.
-- Cumulative totals remain on the user profile, while the leaderboard displays separate game results.
+- Every completed authenticated game stores one `GameResult` per player. Profiles and leaderboards are computed from these records.
+- The leaderboard ranks players by total points in the chosen window: all time, this week (from Monday 00:00 UTC) or today (from 00:00 UTC). It's only available to logged-in users; logged-out visitors are sent to login and brought back afterwards.
+- Public profiles never include an email address or user ID. Display names aren't unique, so `/u/:displayName` matches case-insensitively and shows the oldest account with that name.
+
+## REST API
+
+| Endpoint | Auth | Description |
+| --- | --- | --- |
+| `POST /auth/register` | – | Create an account and set the auth cookie |
+| `POST /auth/login` | – | Log in and set the auth cookie |
+| `POST /auth/logout` | – | Clear the auth cookie |
+| `GET /auth/me` | Cookie | The logged-in user, or 401 |
+| `GET /auth/me/history?page=1&limit=10` | Cookie | Your games, newest first (`limit` up to 50), with `total`, `hasMore` and lifetime `stats` (total score, games, wins, win rate, best game) |
+| `GET /users/:displayName` | – | Public profile: stats and the last 10 games |
+| `GET /leaderboard?period=all\|week\|today` | Cookie | Top 20 players for the window |
+
+## Socket events
+
+Every client → server payload is validated with Zod (`socket-server/src/validation/schemas.ts`). The server decides every rule: who is drawing, the word, the round and the scores.
+
+**Client → server:** `createRoom`, `joinRoom` (optional `reconnectToken`), `startGame`, `chooseWord`, `chatMessage`, `drawing` (one stroke segment), `fill` (`{ strokeId, x, y, color }`), `undoStroke`, `clearCanvas`, `updateSettings`, `kickPlayer`.
+
+**Server → client:** `joinRoomSuccess`, `joinError`, `syncState` (full room state for a returning player, including the drawing history), `playerList`, `settingsUpdated`, `settingsError`, `kicked`, `gameStarted`, `drawingTurn`, `wordOptions`, `roundStart`, `hint`, `closeGuess`, `chatMessage`, `drawing`, `fill`, `strokeUndone`, `canvasCleared`, `pointsUpdate`, `turnEnded`, `roundStartingSoon`, `gameOver` (final scores and the gallery), `startGameError`.
+
+Each turn's drawing is an ordered list of operations: line segments and fills. Clients replay them in order, so everyone sees the same picture, and the drawer's undo removes the last operation by its `strokeId`. The gallery keeps each finished drawing, thinned to at most 1,500 operations, and the whole gallery sent with `gameOver` is capped at 40,000 operations.
 
 ## Health endpoints
 
@@ -173,20 +210,21 @@ npm test
 npm audit --omit=dev
 ```
 
-The suite currently contains **48 tests** covering:
+The suite currently contains **103 tests** covering:
 
 - Scoring and word-placeholder logic
 - Zod validation boundaries
 - Environment validation
 - Liveness and readiness behavior
 - Registration, login, logout, persistent cookies, and sanitized responses
-- Authenticated leaderboard access and per-game sorting
+- Profile history pagination, public profiles, and all-time/weekly/daily leaderboards, run against `mongodb-memory-server` (no external database needed)
 - Full Socket.IO game flow
 - Duplicate-name and room-cap rejection
 - Host reassignment
 - Authenticated result persistence and duplicate-start protection
 - Turn-lifecycle regressions: no scoring after the word is revealed, no stalls when players leave, no stale word-pick timers
 - Reserved-name rejection, foreign-Origin WebSocket rejection, room resume, and database-failure handling
+- v2 gameplay: stroke relay and undo, fills, hints, close guesses, guessed-only chat, reconnect within the grace period, lobby settings, word packs, kicking, and the end-of-game gallery
 
 ### Frontend
 
@@ -215,15 +253,18 @@ ScribbleVerse/
 ├── docker-compose.yml          # Local frontend, backend, and MongoDB
 ├── react-client/
 │   ├── src/components/         # Pages and game UI
+│   ├── src/game/               # Shared types, canvas renderer (strokes and flood fill), sounds
 │   ├── src/contexts/           # Persistent authentication state
 │   ├── src/lib/                # Typed REST API client
 │   ├── Dockerfile
 │   └── nginx.conf
 └── socket-server/
     ├── src/__tests__/          # Unit and integration tests
-    ├── src/auth/               # JWT handling
+    ├── src/auth/               # JWT handling and the requireAuth middleware
+    ├── src/game/               # Word packs, hint helpers, drawing operations
     ├── src/model/              # MongoDB models
-    ├── src/routes/             # Auth and leaderboard REST routes
+    ├── src/routes/             # Auth, profile, and leaderboard REST routes
+    ├── src/stats/              # Profile and leaderboard aggregations
     ├── src/validation/         # Zod network schemas
     ├── src/server.ts           # Express, Socket.IO, and game engine
     ├── src/index.ts            # Startup and graceful shutdown

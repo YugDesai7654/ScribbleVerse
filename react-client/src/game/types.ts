@@ -10,6 +10,29 @@ export type StrokeSegment = {
   size: number
 }
 
+/** A flood fill at a point. Replayed in order with the strokes, so every client gets the same picture. */
+export type FillOp = {
+  type: "fill"
+  strokeId: string
+  x: number
+  y: number
+  color: string
+}
+
+/** Anything stored in a turn's drawing history. */
+export type DrawOp = StrokeSegment | FillOp
+
+export function isFill(op: DrawOp): op is FillOp {
+  return (op as FillOp).type === "fill"
+}
+
+/** One finished drawing, sent with `gameOver` for the gallery. */
+export type GalleryEntry = {
+  drawerName: string
+  word: string
+  ops: DrawOp[]
+}
+
 /** `connected` is false while the server holds a dropped player's seat. */
 export type Player = { id: string; name: string; connected?: boolean }
 export type Score = { name: string; score: number }
@@ -72,6 +95,6 @@ export type SyncState = {
   timeLeft: number
   scores: Record<string, number>
   guessed: string[]
-  strokes: StrokeSegment[]
+  strokes: DrawOp[]
   chat: ChatMessage[]
 }

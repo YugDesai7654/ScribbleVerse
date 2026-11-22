@@ -97,6 +97,15 @@ export const drawingSchema = z.object({
   size: z.number().min(1).max(60),
 });
 
+/** Flood fill at a point. The server stores it in the turn's history; clients replay it in order. */
+export const fillSchema = z.object({
+  roomId: roomIdField,
+  strokeId: z.string().min(1).max(32),
+  x: z.number().min(0).max(1),
+  y: z.number().min(0).max(1),
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Color must be a #rrggbb hex value'),
+});
+
 export const undoStrokeSchema = z.object({
   roomId: roomIdField,
 });

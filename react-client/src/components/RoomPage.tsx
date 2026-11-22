@@ -1,8 +1,9 @@
 "use client"
 import { useLocation, useNavigate, Link } from "react-router-dom"
 import React, { useState, useRef, useEffect, memo } from "react"
-import { motion, AnimatePresence } from "framer-motion"
-import { Users, PlusCircle, Paintbrush, Trophy, LogIn, LogOut, Award } from "lucide-react"
+import { m, AnimatePresence } from "framer-motion"
+import { Users, PlusCircle, Paintbrush, Trophy, LogIn, LogOut, Award, UserRound } from "lucide-react"
+import ThemeToggle from "./ThemeToggle"
 import socket from "../socket"
 import { useAuth } from "../contexts/useAuth"
 
@@ -11,7 +12,7 @@ const FloatingParticles = memo(function FloatingParticles() {
   return (
     <div className="fixed inset-0 overflow-hidden pointer-events-none z-0">
       {[...Array(40)].map((_, i) => (
-        <motion.div
+        <m.div
           key={i}
           className="absolute w-1.5 h-1.5 bg-gradient-to-br from-yellow-300 to-orange-400 rounded-full"
           style={{
@@ -161,65 +162,75 @@ export default function RoomPage() {
   }
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-[#0d0d0d] text-[#ffedd2] p-4 pt-16 overflow-hidden">
+    <div className="flex flex-col items-center justify-center min-h-screen bg-ink text-cream p-4 sm:pt-16 overflow-hidden">
       <FloatingParticles />
 
-      {/* Auth status bar */}
-      <div className="fixed top-4 right-4 z-30 flex items-center gap-3 text-sm">
-        <Link to="/leaderboard" className="flex items-center gap-1 text-[#ffedd2]/70 hover:text-[#ffedd2] transition-colors">
-          <Award className="w-4 h-4" /> Leaderboard
+      {/* Auth status bar: in the page flow on phones so it can't cover the heading (BUG-002), pinned top-right from sm up. */}
+      <nav
+        className="relative z-30 mb-6 flex w-full flex-wrap items-center justify-end gap-x-4 gap-y-2 text-sm sm:fixed sm:top-4 sm:right-4 sm:mb-0 sm:w-auto"
+        aria-label="Account"
+      >
+        <Link to="/leaderboard" className="flex items-center gap-1 whitespace-nowrap text-cream/70 transition-colors hover:text-cream">
+          <Award className="h-4 w-4" aria-hidden /> Leaderboard
         </Link>
         {user ? (
-          <button
-            onClick={() => logout()}
-            className="flex items-center gap-1 text-[#ffedd2]/70 hover:text-[#ffedd2] transition-colors"
-          >
-            <LogOut className="w-4 h-4" /> Log out ({user.displayName})
-          </button>
+          <>
+            <Link to="/profile" className="flex items-center gap-1 whitespace-nowrap text-cream/70 transition-colors hover:text-cream">
+              <UserRound className="h-4 w-4" aria-hidden /> Profile
+            </Link>
+            <button
+              type="button"
+              onClick={() => logout()}
+              className="flex min-w-0 items-center gap-1 text-cream/70 transition-colors hover:text-cream"
+            >
+              <LogOut className="h-4 w-4 shrink-0" aria-hidden /> <span className="truncate">Log out ({user.displayName})</span>
+            </button>
+          </>
         ) : (
-          <Link to="/login" className="flex items-center gap-1 text-[#ffedd2]/70 hover:text-[#ffedd2] transition-colors">
-            <LogIn className="w-4 h-4" /> Log in
+          <Link to="/login" className="flex items-center gap-1 whitespace-nowrap text-cream/70 transition-colors hover:text-cream">
+            <LogIn className="h-4 w-4" aria-hidden /> Log in
           </Link>
         )}
-      </div>
+        <ThemeToggle />
+      </nav>
 
       {/* Zoom effect overlay */}
       <AnimatePresence>
         {isEntering && (
-          <motion.div
+          <m.div
             className="fixed inset-0 bg-black z-50 flex items-center justify-center"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.5, delay: 1.8 }}
           >
-            <motion.div
-              className="text-4xl font-bold text-[#f4d03f]"
+            <m.div
+              className="text-4xl font-bold text-gold"
               initial={{ scale: 0.5, opacity: 0 }}
               animate={{ scale: [0.5, 1.2, 1], opacity: [0, 1, 1] }}
               transition={{ duration: 0.7, delay: 2 }}
               style={{ fontFamily: "Kalam, cursive" }}
             >
               Entering...
-            </motion.div>
-          </motion.div>
+            </m.div>
+          </m.div>
         )}
       </AnimatePresence>
 
-      <motion.div
+      <m.div
         className="text-center mb-12 z-10"
         initial={{ opacity: 0, y: -50 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.7, ease: "easeOut" }}
       >
-        <Paintbrush className="w-16 h-16 mx-auto text-[#f4d03f]" />
+        <Paintbrush className="w-16 h-16 mx-auto text-gold" />
         <h1 className="text-5xl md:text-6xl font-bold mt-4" style={{ fontFamily: "Kalam, cursive" }}>
           Join the Fun
         </h1>
-        <p className="text-[#ffedd2]/70 mt-2 text-lg">Create a private room or join your friends!</p>
-      </motion.div>
+        <p className="text-cream/70 mt-2 text-lg">Create a private room or join your friends!</p>
+      </m.div>
 
       {/* Enhanced 3D Scene */}
-      <motion.div
+      <m.div
         className="relative w-full max-w-2xl h-[500px] z-20"
         style={{ perspective: "2000px" }}
         onMouseMove={handleMouseMove}
@@ -230,7 +241,7 @@ export default function RoomPage() {
         }}
         transition={{ duration: 1.5, ease: [0.6, 0.01, -0.05, 0.9] }}
       >
-        <motion.div
+        <m.div
           ref={sceneRef}
           className="w-full h-full relative"
           style={{ transformStyle: "preserve-3d" }}
@@ -238,18 +249,18 @@ export default function RoomPage() {
         >
           {/* Outer Wall Frame */}
           <div
-            className="absolute inset-0 bg-gradient-to-br from-[#2a2a2a] to-[#1a1a1a] rounded-3xl shadow-2xl border-4 border-[#444]"
+            className="absolute inset-0 bg-gradient-to-br from-panel-2 to-panel rounded-3xl shadow-2xl border-4 border-line"
             style={{
               transform: "translateZ(-100px)",
               boxShadow: "inset 0 0 50px rgba(0,0,0,0.5), 0 20px 40px rgba(0,0,0,0.3)",
             }}
           >
             {/* Inner Room/Antechamber */}
-            <div className="absolute inset-8 bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a] rounded-2xl overflow-hidden">
+            <div className="absolute inset-8 bg-gradient-to-br from-soot-2 to-soot rounded-2xl overflow-hidden">
               {/* Trophy and Light Rays - Revealed when door opens */}
               <AnimatePresence>
                 {isEntering && (
-                  <motion.div
+                  <m.div
                     className="absolute inset-0 flex items-center justify-center"
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
@@ -258,7 +269,7 @@ export default function RoomPage() {
                     {/* God Rays Background */}
                     <div className="absolute inset-0">
                       {[...Array(16)].map((_, i) => (
-                        <motion.div
+                        <m.div
                           key={i}
                           className="absolute top-1/2 left-1/2 origin-bottom"
                           style={{
@@ -285,7 +296,7 @@ export default function RoomPage() {
                     </div>
 
                     {/* Central Light Source */}
-                    <motion.div
+                    <m.div
                       className="absolute inset-0 bg-gradient-radial from-yellow-400/30 via-yellow-400/10 to-transparent"
                       initial={{ scale: 0, opacity: 0 }}
                       animate={{ scale: 1, opacity: 1 }}
@@ -293,7 +304,7 @@ export default function RoomPage() {
                     />
 
                     {/* Trophy */}
-                    <motion.div
+                    <m.div
                       className="relative z-10"
                       initial={{ scale: 0, rotateY: 0 }}
                       animate={{
@@ -308,31 +319,31 @@ export default function RoomPage() {
                       <Trophy className="w-32 h-32 text-yellow-400 drop-shadow-2xl" />
                       {/* Trophy Glow */}
                       <div className="absolute inset-0 bg-yellow-400/50 blur-xl rounded-full" />
-                    </motion.div>
-                  </motion.div>
+                    </m.div>
+                  </m.div>
                 )}
               </AnimatePresence>
             </div>
           </div>
 
           {/* The Door */}
-          <motion.div
+          <m.div
             className="absolute inset-8 origin-left z-10"
             style={{ transformStyle: "preserve-3d" }}
             animate={{ rotateY: isEntering ? -130 : 0 }}
             transition={{ duration: 1.5, ease: [0.6, 0.01, -0.05, 0.9] }}
           >
             <div
-              className="w-full h-full bg-gradient-to-br from-[#4a2e1a] to-[#2c1a0e] rounded-2xl border-4 border-[#5e3a22] shadow-2xl relative overflow-hidden"
+              className="w-full h-full bg-gradient-to-br from-wood-light to-wood-deep rounded-2xl border-4 border-wood shadow-2xl relative overflow-hidden"
               style={{
                 backfaceVisibility: "hidden",
                 boxShadow: "0 0 30px rgba(0,0,0,0.5), inset 0 0 20px rgba(139,69,19,0.3)",
               }}
             >
               {/* Door Panels */}
-              <div className="absolute top-8 left-8 right-8 bottom-8 border-2 border-[#5e3a22] rounded-lg">
-                <div className="absolute top-4 left-4 right-4 bottom-1/2 border border-[#5e3a22] rounded-md" />
-                <div className="absolute bottom-4 left-4 right-4 top-1/2 border border-[#5e3a22] rounded-md" />
+              <div className="absolute top-8 left-8 right-8 bottom-8 border-2 border-wood rounded-lg">
+                <div className="absolute top-4 left-4 right-4 bottom-1/2 border border-wood rounded-md" />
+                <div className="absolute bottom-4 left-4 right-4 top-1/2 border border-wood rounded-md" />
               </div>
 
               {/* Enhanced Doorknob */}
@@ -344,14 +355,14 @@ export default function RoomPage() {
               </div>
 
               {/* Door Content */}
-              <motion.div
+              <m.div
                 className="p-8 h-full flex flex-col justify-center"
                 style={{ transform: 'translateZ(1px)' }} // <-- THE FIX IS HERE
                 animate={{ opacity: isEntering ? 0 : 1 }}
                 transition={{ duration: 0.3 }}
               >
-                <div className="flex mb-6 bg-[#1a0f07] p-1 rounded-lg">
-                  <motion.button
+                <div className="flex mb-6 bg-wood-dark p-1 rounded-lg">
+                  <m.button
                     className="flex-1 py-3 text-lg font-semibold rounded-md"
                     onClick={() => {
                       setTab("join")
@@ -362,8 +373,8 @@ export default function RoomPage() {
                     style={{ borderBottomWidth: "2px" }}
                   >
                     Join Room
-                  </motion.button>
-                  <motion.button
+                  </m.button>
+                  <m.button
                     className="flex-1 py-3 text-lg font-semibold rounded-md"
                     onClick={() => {
                       setTab("create")
@@ -374,12 +385,12 @@ export default function RoomPage() {
                     style={{ borderBottomWidth: "2px" }}
                   >
                     Create Room
-                  </motion.button>
+                  </m.button>
                 </div>
 
                 <AnimatePresence mode="wait">
                   {tab === "join" ? (
-                    <motion.form
+                    <m.form
                       key="join"
                       onSubmit={handleJoin}
                       className="flex flex-col gap-4"
@@ -388,37 +399,39 @@ export default function RoomPage() {
                       animate="visible"
                       exit="exit"
                     >
-                      <motion.input
-                        className="bg-[#1a0f07] border border-[#5e3a22] rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-[#f4d03f] text-[#ffedd2] placeholder:text-[#ffedd2]/50"
+                      <m.input
+                        className="bg-wood-dark border border-wood rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-brass text-parchment placeholder:text-parchment/50"
                         placeholder="Your Name"
+                        aria-label="Your name"
                         value={name}
                         onChange={(e) => setName(e.target.value)}
                         autoFocus
                         maxLength={20}
                         variants={inputVariants}
                       />
-                      <motion.input
-                        className="bg-[#1a0f07] border border-[#5e3a22] rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-[#f4d03f] text-[#ffedd2] placeholder:text-[#ffedd2]/50"
+                      <m.input
+                        className="bg-wood-dark border border-wood rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-brass text-parchment placeholder:text-parchment/50"
                         placeholder="Room Code"
+                        aria-label="Room code"
                         value={roomCode}
                         onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
                         maxLength={8}
                         variants={inputVariants}
                       />
                       {error && <div className="text-red-400 text-sm text-center">{error}</div>}
-                      <motion.button
+                      <m.button
                         type="submit"
-                        className="bg-gradient-to-r from-[#ffedd2] to-[#f4d03f] text-[#0d0d0d] font-bold py-3 rounded-lg hover:shadow-lg hover:shadow-[#ffedd2]/20 transition flex items-center justify-center gap-2 mt-2"
+                        className="bg-gradient-to-r from-parchment to-brass text-soot font-bold py-3 rounded-lg hover:shadow-lg hover:shadow-parchment/20 transition flex items-center justify-center gap-2 mt-2"
                         whileHover={{ scale: 1.05, y: -2 }}
                         whileTap={{ scale: 0.95 }}
                         variants={inputVariants}
                       >
                         <Users className="w-5 h-5" />
                         Enter Room
-                      </motion.button>
-                    </motion.form>
+                      </m.button>
+                    </m.form>
                   ) : (
-                    <motion.form
+                    <m.form
                       key="create"
                       onSubmit={handleCreate}
                       className="flex flex-col gap-4"
@@ -427,73 +440,74 @@ export default function RoomPage() {
                       animate="visible"
                       exit="exit"
                     >
-                      <motion.input
-                        className="bg-[#1a0f07] border border-[#5e3a22] rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-[#f4d03f] text-[#ffedd2] placeholder:text-[#ffedd2]/50"
+                      <m.input
+                        className="bg-wood-dark border border-wood rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-brass text-parchment placeholder:text-parchment/50"
                         placeholder="Your Name"
+                        aria-label="Your name"
                         value={name}
                         onChange={(e) => setName(e.target.value)}
                         autoFocus
                         maxLength={20}
                         variants={inputVariants}
                       />
-                      <motion.div variants={inputVariants} className="grid grid-cols-3 gap-2 sm:gap-4">
+                      <m.div variants={inputVariants} className="grid grid-cols-3 gap-2 sm:gap-4">
                         <div className="flex-1">
-                          <label className="text-sm text-[#ffedd2]/70" htmlFor="room-rounds">Rounds</label>
+                          <label className="text-sm text-parchment/70" htmlFor="room-rounds">Rounds</label>
                           <input
                             type="number"
                             min={1}
                             max={10}
-                            className="w-full bg-[#1a0f07] border border-[#5e3a22] rounded-lg px-2 py-3 text-center focus:outline-none focus:ring-2 focus:ring-[#f4d03f] text-[#ffedd2]"
+                            className="w-full bg-wood-dark border border-wood rounded-lg px-2 py-3 text-center focus:outline-none focus:ring-2 focus:ring-brass text-parchment"
                             id="room-rounds"
                             value={rounds}
                             onChange={(e) => setRounds(Number(e.target.value))}
                           />
                         </div>
                         <div className="flex-1">
-                          <label className="text-sm text-[#ffedd2]/70 whitespace-nowrap" htmlFor="room-time">Time (s)</label>
+                          <label className="text-sm text-parchment/70 whitespace-nowrap" htmlFor="room-time">Time (s)</label>
                           <input
                             type="number"
                             min={10}
                             max={300}
                             step={5}
-                            className="w-full bg-[#1a0f07] border border-[#5e3a22] rounded-lg px-2 py-3 text-center focus:outline-none focus:ring-2 focus:ring-[#f4d03f] text-[#ffedd2]"
+                            className="w-full bg-wood-dark border border-wood rounded-lg px-2 py-3 text-center focus:outline-none focus:ring-2 focus:ring-brass text-parchment"
                             id="room-time"
                             value={timePerRound}
                             onChange={(e) => setTimePerRound(Number(e.target.value))}
                           />
                         </div>
                         <div className="flex-1">
-                          <label className="text-sm text-[#ffedd2]/70" htmlFor="room-players">Players</label>
+                          <label className="text-sm text-parchment/70" htmlFor="room-players">Players</label>
                           <input
                             type="number"
                             min={2}
                             max={12}
-                            className="w-full bg-[#1a0f07] border border-[#5e3a22] rounded-lg px-2 py-3 text-center focus:outline-none focus:ring-2 focus:ring-[#f4d03f] text-[#ffedd2]"
+                            className="w-full bg-wood-dark border border-wood rounded-lg px-2 py-3 text-center focus:outline-none focus:ring-2 focus:ring-brass text-parchment"
                             id="room-players"
                             value={maxPlayers}
                             onChange={(e) => setMaxPlayers(Number(e.target.value))}
                           />
                         </div>
-                      </motion.div>
+                      </m.div>
                       {error && <div className="text-red-400 text-sm text-center">{error}</div>}
-                      <motion.button
+                      <m.button
                         type="submit"
-                        className="bg-gradient-to-r from-[#ffedd2] to-[#f4d03f] text-[#0d0d0d] font-bold py-3 rounded-lg hover:shadow-lg hover:shadow-[#ffedd2]/20 transition flex items-center justify-center gap-2 mt-2"
+                        className="bg-gradient-to-r from-parchment to-brass text-soot font-bold py-3 rounded-lg hover:shadow-lg hover:shadow-parchment/20 transition flex items-center justify-center gap-2 mt-2"
                         whileHover={{ scale: 1.05, y: -2 }}
                         whileTap={{ scale: 0.95 }}
                         variants={inputVariants}
                       >
                         <PlusCircle className="w-5 h-5" />
                         Create New Room
-                      </motion.button>
-                    </motion.form>
+                      </m.button>
+                    </m.form>
                   )}
                 </AnimatePresence>
-              </motion.div>
+              </m.div>
             </div>
-          </motion.div>
-        </motion.div>
-      </motion.div>
+          </m.div>
+        </m.div>
+      </m.div>
     </div>
   )
 }

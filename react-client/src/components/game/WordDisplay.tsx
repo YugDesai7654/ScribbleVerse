@@ -1,4 +1,4 @@
-import { AnimatePresence, motion } from "framer-motion"
+import { AnimatePresence, m } from "framer-motion"
 
 interface WordDisplayProps {
   /** Server placeholder/hint format: characters separated by single spaces, words by triple spaces. */
@@ -33,14 +33,14 @@ export default function WordDisplay({ pattern, isDrawer }: WordDisplayProps) {
                   }`}
                 >
                   <AnimatePresence mode="wait">
-                    <motion.span
+                    <m.span
                       key={char}
                       initial={{ rotateX: 90, opacity: 0 }}
                       animate={{ rotateX: 0, opacity: 1 }}
                       transition={{ duration: 0.3 }}
                     >
                       {revealed ? char : "·"}
-                    </motion.span>
+                    </m.span>
                   </AnimatePresence>
                 </div>
               )

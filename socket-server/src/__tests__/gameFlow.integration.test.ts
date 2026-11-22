@@ -733,4 +733,81 @@ describe('game flow (Socket.IO integration)', () => {
     retry.emit('joinRoom', { roomId, name: 'Bob' });
     expect((await refused).message).toMatch(/removed you/);
   });
+
+  // ------------------------------------------------------------------
+  // v2 phase 3: fill bucket, end-of-game gallery
+  // ------------------------------------------------------------------
+
+  it('relays drawer fills in order with strokes, ignores others, and lets the drawer undo a fill', async () => {
+    const { roomId, drawer, others } = await liveTurn();
+    const [guesser, bystander] = others;
+    const fills = collect<Record<string, unknown>>(bystander.socket, 'fill');
+    const lines = collect<Record<string, unknown>>(bystander.socket, 'drawing');
+
+    drawer.socket.emit('drawing', { roomId, strokeId: 's1', from: null, to: { x: 0.2, y: 0.2 }, color: '#000000', size: 8 });
+    drawer.socket.emit('fill', { roomId, strokeId: 'f1', x: 0.5, y: 0.5, color: '#ef4444' });
+    // Not the drawer, out of range, and a bad colour: all dropped.
+    guesser.socket.emit('fill', { roomId, strokeId: 'f2', x: 0.5, y: 0.5, color: '#ef4444' });
+    drawer.socket.emit('fill', { roomId, strokeId: 'f3', x: 1.5, y: 0.5, color: '#ef4444' });
+    drawer.socket.emit('fill', { roomId, strokeId: 'f4', x: 0.5, y: 0.5, color: 'red' });
+
+    await vi.waitFor(() => expect(fills).toHaveLength(1));
+    await sleep(200);
+    expect(lines).toHaveLength(1);
+    expect(fills).toEqual([{ type: 'fill', strokeId: 'f1', x: 0.5, y: 0.5, color: '#ef4444' }]);
+
+    // A rejoining player replays the stored history in the order it was drawn.
+    dropNetwork(guesser.socket);
+    await sleep(200);
+    const back = await rejoin(roomId, guesser.name, guesser.token);
+    expect(back.sync.strokes).toEqual([
+      { strokeId: 's1', from: null, to: { x: 0.2, y: 0.2 }, color: '#000000', size: 8 },
+      { type: 'fill', strokeId: 'f1', x: 0.5, y: 0.5, color: '#ef4444' },
+    ]);
+
+    const undone = waitForEvent<{ strokeId: string }>(bystander.socket, 'strokeUndone');
+    drawer.socket.emit('undoStroke', { roomId });
+    expect(await undone).toEqual({ strokeId: 'f1' });
+  });
+
+  it('sends each drawn turn with gameOver as a gallery, skipping turns with no drawing', async () => {
+    const { roomId, players } = await setupRoom(['Alice', 'Bob'], { rounds: 1, timePerRound: 30 });
+    const gameOver = Promise.race(
+      players.map((p) => waitForEvent<{ scores: unknown[]; gallery: { drawerName: string; word: string; ops: unknown[] }[] }>(p.socket, 'gameOver'))
+    );
+
+    // Turn 1: the drawer draws a stroke and a fill, then the other player guesses.
+    const first = await startAndGetDrawer(players);
+    const guesser1 = first.others[0];
+    const word1 = first.options[0];
+    let live = waitForEvent(guesser1.socket, 'roundStart');
+    first.drawer.socket.emit('chooseWord', { roomId, word: word1 });
+    await live;
+    first.drawer.socket.emit('drawing', { roomId, strokeId: 'a', from: null, to: { x: 0.1, y: 0.1 }, color: '#000000', size: 8 });
+    first.drawer.socket.emit('drawing', { roomId, strokeId: 'a', from: { x: 0.1, y: 0.1 }, to: { x: 0.3, y: 0.3 }, color: '#000000', size: 8 });
+    first.drawer.socket.emit('fill', { roomId, strokeId: 'b', x: 0.8, y: 0.8, color: '#22c55e' });
+    await sleep(200);
+    const nextOptions = waitForEvent<{ options: string[] }>(guesser1.socket, 'wordOptions');
+    guesser1.socket.emit('chatMessage', { roomId, user: guesser1.name, text: word1 });
+
+    // Turn 2: the new drawer picks a word but draws nothing.
+    const word2 = (await nextOptions).options[0];
+    live = waitForEvent(first.drawer.socket, 'roundStart');
+    guesser1.socket.emit('chooseWord', { roomId, word: word2 });
+    await live;
+    first.drawer.socket.emit('chatMessage', { roomId, user: first.drawer.name, text: word2 });
+
+    const { gallery } = await gameOver;
+    expect(gallery).toEqual([
+      {
+        drawerName: first.drawer.name,
+        word: word1,
+        ops: [
+          { strokeId: 'a', from: null, to: { x: 0.1, y: 0.1 }, color: '#000000', size: 8 },
+          { strokeId: 'a', from: { x: 0.1, y: 0.1 }, to: { x: 0.3, y: 0.3 }, color: '#000000', size: 8 },
+          { type: 'fill', strokeId: 'b', x: 0.8, y: 0.8, color: '#22c55e' },
+        ],
+      },
+    ]);
+  }, 20000);
 });

@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Navigate, useNavigate, useParams } from "react-router-dom"
-import { AnimatePresence, motion } from "framer-motion"
+import { AnimatePresence, m } from "framer-motion"
 import { LogOut, MessageCircle, Users, Volume2, VolumeX } from "lucide-react"
 import socket from "../socket"
 import { useAuth } from "../contexts/useAuth"
-import type { ChatMessage, Player, RoomSettings, Score, SettingsChange, StrokeSegment, SyncState, TurnSummary } from "../game/types"
+import type { ChatMessage, DrawOp, FillOp, GalleryEntry, Player, RoomSettings, Score, SettingsChange, StrokeSegment, SyncState, TurnSummary } from "../game/types"
 import { BRUSH_SIZES, PALETTE } from "../game/types"
 import { isMuted, play, setMuted } from "../game/sound"
 import DrawingCanvas from "./game/DrawingCanvas"
 import DrawingToolbar from "./game/DrawingToolbar"
 import { strokeColor, type Tool } from "../game/utils"
 import WordDisplay from "./game/WordDisplay"
+import ThemeToggle from "./ThemeToggle"
 import TimerRing from "./game/TimerRing"
 import PlayerList from "./game/PlayerList"
 import ChatPanel from "./game/ChatPanel"
@@ -64,14 +65,14 @@ export default function GameRoomPage() {
   const [drawerId, setDrawerId] = useState<string | null>(null)
   const [wordOptions, setWordOptions] = useState<string[] | null>(null)
   const [wordPattern, setWordPattern] = useState("")
-  const [segments, setSegments] = useState<StrokeSegment[]>([])
+  const [segments, setSegments] = useState<DrawOp[]>([])
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [points, setPoints] = useState<Record<string, number>>({})
   const [gains, setGains] = useState<Record<string, { points: number; key: number }>>({})
   const [guessed, setGuessed] = useState<Set<string>>(new Set())
   const [countdown, setCountdown] = useState<number | null>(null)
   const [summary, setSummary] = useState<TurnSummary | null>(null)
-  const [gameOver, setGameOver] = useState<{ scores: Score[]; reason?: string } | null>(null)
+  const [gameOver, setGameOver] = useState<{ scores: Score[]; reason?: string; gallery?: GalleryEntry[] } | null>(null)
   const [confettiKey, setConfettiKey] = useState(0)
   const [muted, setMutedState] = useState(isMuted)
   const [mobileTab, setMobileTab] = useState<"chat" | "players">("chat")
@@ -220,7 +221,7 @@ export default function GameRoomPage() {
         setSummary(data)
         setPhase("summary")
       },
-      gameOver: (data: { scores: Score[]; reason?: string }) => {
+      gameOver: (data: { scores: Score[]; reason?: string; gallery?: GalleryEntry[] }) => {
         stopTimer()
         setTimer(0)
         setDrawerId(null)
@@ -250,6 +251,7 @@ export default function GameRoomPage() {
       chatError: (data: { message: string }) => toast(data.message, "error"),
       startGameError: (data: { message: string }) => toast(data.message, "error"),
       drawing: (segment: StrokeSegment) => setSegments((prev) => [...prev, segment]),
+      fill: (fill: FillOp) => setSegments((prev) => [...prev, fill]),
       strokeUndone: ({ strokeId }: { strokeId: string }) =>
         setSegments((prev) => prev.filter((segment) => segment.strokeId !== strokeId)),
       canvasCleared: () => setSegments([]),
@@ -306,6 +308,14 @@ export default function GameRoomPage() {
     [tool, color, brushSize, roomId]
   )
 
+  const handleFill = useCallback(
+    (fill: FillOp) => {
+      socket.emit("fill", { ...fill, roomId })
+      setSegments((prev) => [...prev, fill])
+    },
+    [roomId]
+  )
+
   const undo = useCallback(() => {
     if (canDraw) socket.emit("undoStroke", { roomId })
   }, [canDraw, roomId])
@@ -324,6 +334,7 @@ export default function GameRoomPage() {
         undo()
       } else if (e.key === "b") setTool("brush")
       else if (e.key === "e") setTool("eraser")
+      else if (e.key === "f") setTool("fill")
       else if (e.key === "[" || e.key === "]") {
         setBrushSize((current) => {
           const i = BRUSH_SIZES.indexOf(current as (typeof BRUSH_SIZES)[number])
@@ -394,6 +405,7 @@ export default function GameRoomPage() {
               Round {round}/{totalRounds}
             </span>
           )}
+          <ThemeToggle className="h-9 w-9 border-transparent bg-transparent" />
           <button type="button" onClick={toggleMute} className="rounded-lg p-2 hover:bg-panel-2" aria-label={muted ? "Unmute sounds" : "Mute sounds"}>
             {muted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
           </button>
@@ -438,18 +450,18 @@ export default function GameRoomPage() {
           </div>
 
           <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-line bg-panel-2/40 p-2">
-            <DrawingCanvas segments={segments} canDraw={canDraw} color={strokeColor(tool, color)} size={brushSize} onSegment={handleSegment} />
+            <DrawingCanvas ops={segments} canDraw={canDraw} tool={tool} color={strokeColor(tool, color)} size={brushSize} onSegment={handleSegment} onFill={handleFill} />
 
             {/* Word choice for the drawer */}
             <AnimatePresence>
               {isDrawer && phase === "choosing" && wordOptions && (
-                <motion.div className="absolute inset-0 z-20 flex items-center justify-center overflow-y-auto bg-black/70 p-3" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                <m.div className="absolute inset-0 z-20 flex items-center justify-center overflow-y-auto bg-black/70 p-3" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                   <div className="text-center">
                     <p className="font-display text-xl font-bold sm:text-2xl">Pick a word to draw</p>
                     <p className="mt-0.5 text-xs text-cream/60 sm:text-sm">Auto-picks in 10 seconds</p>
                     <div className="mt-3 flex flex-wrap justify-center gap-2 sm:mt-5 sm:gap-3">
                       {wordOptions.map((word) => (
-                        <motion.button
+                        <m.button
                           key={word}
                           type="button"
                           onClick={() => chooseWord(word)}
@@ -457,11 +469,11 @@ export default function GameRoomPage() {
                           className="rounded-xl border border-line bg-panel px-4 py-2 font-display text-lg font-bold capitalize hover:border-gold sm:px-5 sm:py-3 sm:text-xl"
                         >
                           {word}
-                        </motion.button>
+                        </m.button>
                       ))}
                     </div>
                   </div>
-                </motion.div>
+                </m.div>
               )}
             </AnimatePresence>
 
@@ -537,6 +549,7 @@ export default function GameRoomPage() {
           <GameOverOverlay
             scores={gameOver.scores}
             reason={gameOver.reason}
+            gallery={gameOver.gallery ?? []}
             isHost={isHost}
             canPlayAgain={players.length >= 2}
             onPlayAgain={startGame}

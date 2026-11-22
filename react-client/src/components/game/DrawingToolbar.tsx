@@ -1,4 +1,4 @@
-import { Eraser, Paintbrush, Trash2, Undo2 } from "lucide-react"
+import { Eraser, PaintBucket, Paintbrush, Trash2, Undo2 } from "lucide-react"
 import { BRUSH_SIZES, PALETTE } from "../../game/types"
 import type { Tool } from "../../game/utils"
 
@@ -28,7 +28,7 @@ export default function DrawingToolbar({
     >
       <div className="grid grid-cols-12 gap-1 sm:flex sm:gap-1.5" role="radiogroup" aria-label="Colour">
         {PALETTE.map((swatch) => {
-          const selected = tool === "brush" && color === swatch
+          const selected = tool !== "eraser" && color === swatch
           return (
             <button
               key={swatch}
@@ -36,7 +36,7 @@ export default function DrawingToolbar({
               role="radio"
               aria-checked={selected}
               aria-label={`Colour ${swatch}`}
-              onClick={() => { onColor(swatch); onTool("brush") }}
+              onClick={() => { onColor(swatch); if (tool === "eraser") onTool("brush") }}
               className={`aspect-square w-full rounded-full border-2 transition-transform sm:h-7 sm:w-7 ${selected ? "border-gold scale-110" : "border-line hover:scale-105"}`}
               style={{ backgroundColor: swatch }}
             />
@@ -69,6 +69,7 @@ export default function DrawingToolbar({
           type="button"
           onClick={() => onTool("brush")}
           aria-pressed={tool === "brush"}
+          aria-label="Brush"
           title="Brush (B)"
           className={`${iconButton} ${tool === "brush" ? "border-gold bg-panel-2" : "border-line hover:bg-panel-2"}`}
         >
@@ -76,20 +77,32 @@ export default function DrawingToolbar({
         </button>
         <button
           type="button"
+          onClick={() => onTool("fill")}
+          aria-pressed={tool === "fill"}
+          aria-label="Fill bucket"
+          title="Fill (F)"
+          className={`${iconButton} ${tool === "fill" ? "border-gold bg-panel-2" : "border-line hover:bg-panel-2"}`}
+        >
+          <PaintBucket className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
           onClick={() => onTool("eraser")}
           aria-pressed={tool === "eraser"}
+          aria-label="Eraser"
           title="Eraser (E)"
           className={`${iconButton} ${tool === "eraser" ? "border-gold bg-panel-2" : "border-line hover:bg-panel-2"}`}
         >
           <Eraser className="h-4 w-4" />
         </button>
-        <button type="button" onClick={onUndo} disabled={!canUndo} title="Undo (Ctrl+Z)" className={`${iconButton} border-line hover:bg-panel-2`}>
+        <button type="button" onClick={onUndo} disabled={!canUndo} aria-label="Undo" title="Undo (Ctrl+Z)" className={`${iconButton} border-line hover:bg-panel-2`}>
           <Undo2 className="h-4 w-4" />
         </button>
         <button
           type="button"
           onClick={onClear}
           disabled={!canUndo}
+          aria-label="Clear canvas"
           title="Clear canvas"
           className={`${iconButton} border-line text-danger hover:bg-danger/10`}
         >

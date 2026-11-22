@@ -1,4 +1,4 @@
-import { motion } from "framer-motion"
+import { m } from "framer-motion"
 import { useMemo } from "react"
 import { PALETTE } from "../../game/types"
 
@@ -20,7 +20,7 @@ export default function Confetti({ pieces = 40 }: { pieces?: number }) {
   return (
     <div className="pointer-events-none absolute inset-0 overflow-visible" aria-hidden>
       {bits.map((bit) => (
-        <motion.span
+        <m.span
           key={bit.id}
           className="absolute left-1/2 top-1/2 h-2.5 w-1.5 rounded-sm"
           style={{ backgroundColor: bit.color }}

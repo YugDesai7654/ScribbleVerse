@@ -296,44 +296,5 @@ describe('authentication HTTP API', () => {
       },
     });
   });
-
-  it('requires authentication and returns only the top 20 sanitized per-game results', async () => {
-    const unauthenticatedResponse = await fetch(`${testServer.url}/leaderboard`);
-    expect(unauthenticatedResponse.status).toBe(401);
-    await expect(unauthenticatedResponse.json()).resolves.toEqual({
-      message: 'Log in to view the leaderboard.',
-    });
-
-    for (let index = 0; index < 22; index += 1) {
-      gameResults.__seed({
-        userId: `user-${index}`,
-        displayName: `Player ${index}`,
-        roomId: `ROOM${index}`,
-        score: index * 10,
-        won: index % 2 === 0,
-        playedAt: new Date(Date.UTC(2026, 0, index + 1)),
-      });
-    }
-
-    const token = signToken({ userId: 'viewer-id', displayName: 'Viewer' });
-    const response = await fetch(
-      `${testServer.url}/leaderboard`,
-      jsonRequest('GET', undefined, `token=${token}`)
-    );
-    expect(response.status).toBe(200);
-
-    const body = await response.json();
-    expect(body.leaderboard).toHaveLength(20);
-    expect(body.leaderboard[0]).toEqual({
-      id: 'game-22',
-      displayName: 'Player 21',
-      score: 210,
-      won: false,
-      playedAt: '2026-01-22T00:00:00.000Z',
-    });
-    expect(body.leaderboard[0]).not.toHaveProperty('userId');
-    expect(body.leaderboard[0]).not.toHaveProperty('roomId');
-    expect(body.leaderboard[0]).not.toHaveProperty('email');
-    expect(body.leaderboard[0]).not.toHaveProperty('passwordHash');
-  });
+  // The leaderboard is covered against a real (in-memory) MongoDB in stats.integration.test.ts.
 });

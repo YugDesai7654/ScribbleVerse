@@ -1,4 +1,4 @@
-import { AnimatePresence, motion } from "framer-motion"
+import { AnimatePresence, m } from "framer-motion"
 import { Check, Crown, Pencil, WifiOff } from "lucide-react"
 import type { Player } from "../../game/types"
 import { avatarColor } from "../../game/utils"
@@ -25,7 +25,7 @@ export default function PlayerList({ players, points, hostName, selfId, drawerId
           const hasGuessed = guessed.has(player.name)
           const gain = gains[player.name]
           return (
-            <motion.li
+            <m.li
               key={player.id}
               layout
               initial={{ opacity: 0, x: -12 }}
@@ -58,7 +58,7 @@ export default function PlayerList({ players, points, hostName, selfId, drawerId
               </div>
               <AnimatePresence>
                 {gain && (
-                  <motion.span
+                  <m.span
                     key={gain.key}
                     initial={{ opacity: 0, y: 8, scale: 0.8 }}
                     animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -67,10 +67,10 @@ export default function PlayerList({ players, points, hostName, selfId, drawerId
                     className="absolute -top-2 right-2 rounded-full bg-success px-2 py-0.5 text-xs font-bold text-ink shadow"
                   >
                     +{gain.points}
-                  </motion.span>
+                  </m.span>
                 )}
               </AnimatePresence>
-            </motion.li>
+            </m.li>
           )
         })}
       </AnimatePresence>

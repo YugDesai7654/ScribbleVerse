@@ -16,6 +16,7 @@ import {
   chooseWordSchema,
   clearCanvasSchema,
   undoStrokeSchema,
+  fillSchema,
   updateSettingsSchema,
   kickPlayerSchema,
   validateWithError,
@@ -29,12 +30,21 @@ import {
   isCorrectGuess,
   pickHintIndex,
 } from './game/wordHelpers';
+import {
+  compactOps,
+  fitGallery,
+  isFill,
+  GALLERY_OPS_PER_DRAWING,
+  type DrawOp,
+  type GalleryEntry,
+} from './game/drawOps';
 import { createRateLimiters, isAllowed } from './rateLimiters';
 import { verifyToken, AUTH_COOKIE_NAME } from './auth/jwt';
 import { User } from './model/user';
 import { GameResult } from './model/gameResult';
 import authRouter from './routes/auth';
 import leaderboardRouter from './routes/leaderboard';
+import usersRouter from './routes/users';
 import { logger, requestLogger } from './logger';
 import { isDatabaseReady } from './dbConnect/dbconnect';
 
@@ -119,19 +129,15 @@ export type GameState = RoomSettings & {
   gameId?: string;
   turnGains: { [playerName: string]: number }; // Points earned in the current turn
   usedWords: Set<string>; // Words already drawn this game, never offered again
+  gallery: GalleryEntry[]; // Each finished turn's drawing, sent with gameOver
 };
 
-/** One line segment of a stroke, in normalised (0..1) canvas coordinates. */
-export type StrokeSegment = {
-  strokeId: string;
-  from: { x: number; y: number } | null;
-  to: { x: number; y: number };
-  color: string;
-  size: number;
-};
+export type { StrokeSegment, FillOp, DrawOp } from './game/drawOps';
 
-/** Upper bound on stored segments per turn, so a single drawing can't exhaust memory. */
+/** Upper bound on stored operations per turn, so a single drawing can't exhaust memory. */
 const MAX_SEGMENTS_PER_TURN = 20_000;
+/** Flood fills are costly for clients to replay, so each turn gets fewer of them. */
+export const MAX_FILLS_PER_TURN = 100;
 
 /** How long an unjoined room keeps its in-memory state before being reclaimed. */
 const EMPTY_ROOM_GRACE_MS = 5 * 60 * 1000;
@@ -198,6 +204,7 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
 
   app.use('/auth', authRouter);
   app.use('/leaderboard', leaderboardRouter);
+  app.use('/users', usersRouter);
 
   const server = http.createServer(app);
 
@@ -266,9 +273,10 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
       hintTimers: NodeJS.Timeout[];
     }
   } = {};
-  // Stroke history for the current turn: lets the drawer undo, and is the
-  // foundation for replaying the canvas to clients that (re)join later.
-  const strokes: { [roomId: string]: StrokeSegment[] } = {};
+  // Drawing history for the current turn (segments and fills, in order): lets
+  // the drawer undo, replays the canvas for rejoining clients, and becomes the
+  // turn's gallery entry when it ends.
+  const strokes: { [roomId: string]: DrawOp[] } = {};
   // Names the host kicked from a lobby; they can't rejoin that room.
   const kickedNames: { [roomId: string]: Set<string> } = {};
 
@@ -283,6 +291,7 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
       turnId: 0,
       turnGains: {},
       usedWords: new Set(),
+      gallery: [],
     };
   }
 
@@ -347,7 +356,8 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
     const finalScores = Object.entries(playerPoints[roomId] || {})
       .map(([name, score]) => ({ name, score }))
       .sort((a, b) => b.score - a.score);
-    io.to(roomId).emit('gameOver', { scores: finalScores });
+    io.to(roomId).emit('gameOver', { scores: finalScores, gallery: fitGallery(state.gallery) });
+    state.gallery = [];
     const completedGameId = state.gameId;
     if (completedGameId) {
       persistGameResults(roomId, completedGameId, finalScores).catch((err) => {
@@ -528,6 +538,10 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
 
     const word = wordState[roomId]?.currentWord;
     if (wordState[roomId]) wordState[roomId].currentWord = null; // guessing is closed
+    const drawing = strokes[roomId] ?? [];
+    if (word && drawerName && drawing.length > 0) {
+      state.gallery.push({ drawerName, word, ops: compactOps(drawing, GALLERY_OPS_PER_DRAWING) });
+    }
     if (word) {
       io.to(roomId).emit('chatMessage', { user: 'System', text: `The word was: ${word}`, timestamp: Date.now() });
     }
@@ -994,6 +1008,22 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
       socket.to(roomId).emit('drawing', line);
     });
 
+    socket.on('fill', async (payload) => {
+      const parsed = validate(fillSchema, payload);
+      if (!parsed) return;
+      const { roomId, ...fill } = parsed;
+      if (roomId !== currentRoom) return;
+      const state = gameState[roomId];
+      if (!state || !state.gameStarted || state.phase !== 'drawing' || socket.id !== state.drawingOrder[0]) return;
+      if (!(await isAllowed(drawingLimiter, socket.id))) return;
+      const history = (strokes[roomId] ??= []);
+      if (history.length >= MAX_SEGMENTS_PER_TURN) return;
+      if (history.filter(isFill).length >= MAX_FILLS_PER_TURN) return;
+      const op = { type: 'fill' as const, ...fill };
+      history.push(op);
+      socket.to(roomId).emit('fill', op);
+    });
+
     socket.on('undoStroke', (payload) => {
       const data = validate(undoStrokeSchema, payload);
       if (!data || data.roomId !== currentRoom) return;
@@ -1055,6 +1085,7 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
           state.gameStarted = true;
           state.phase = 'intermission';
           state.usedWords = new Set();
+          state.gallery = [];
 
           playerPoints[roomId] = {};
           players.forEach(p => {

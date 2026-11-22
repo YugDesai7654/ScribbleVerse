@@ -1,6 +1,6 @@
 import { ERASER_COLOR } from "./types"
 
-export type Tool = "brush" | "eraser"
+export type Tool = "brush" | "eraser" | "fill"
 
 export function strokeColor(tool: Tool, color: string) {
   return tool === "eraser" ? ERASER_COLOR : color

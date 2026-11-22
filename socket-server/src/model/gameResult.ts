@@ -12,5 +12,7 @@ const gameResultSchema = new mongoose.Schema({
 
 gameResultSchema.index({ gameId: 1, userId: 1 }, { unique: true });
 gameResultSchema.index({ score: -1, playedAt: -1 });
+// Profile history: one player's games, newest first.
+gameResultSchema.index({ userId: 1, playedAt: -1 });
 
 export const GameResult = mongoose.models.GameResult || mongoose.model('GameResult', gameResultSchema);

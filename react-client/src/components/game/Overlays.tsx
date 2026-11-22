@@ -1,7 +1,8 @@
-import { motion } from "framer-motion"
+import { m } from "framer-motion"
 import { Check, Copy, Crown, LogOut, RotateCcw, Trophy, WifiOff, X } from "lucide-react"
 import { useEffect, useState, type ReactNode } from "react"
-import { CATEGORIES, type Category, type Player, type RoomSettings, type Score, type SettingsChange, type TurnSummary } from "../../game/types"
+import { CATEGORIES, type Category, type GalleryEntry, type Player, type RoomSettings, type Score, type SettingsChange, type TurnSummary } from "../../game/types"
+import Gallery from "./Gallery"
 import { avatarColor } from "../../game/utils"
 
 const backdrop = "absolute inset-0 z-40 flex items-center justify-center bg-black/65 p-4 backdrop-blur-[2px]"
@@ -13,9 +14,9 @@ const secondary =
 
 function Fade({ children, className = backdrop }: { children: ReactNode; className?: string }) {
   return (
-    <motion.div className={className} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+    <m.div className={className} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
       {children}
-    </motion.div>
+    </m.div>
   )
 }
 
@@ -168,7 +169,7 @@ export function LobbyPanel({
 }) {
   return (
     <Fade className="absolute inset-0 z-30 flex items-start justify-center overflow-y-auto rounded-2xl bg-ink p-3 sm:items-center">
-      <motion.div className={`${card} max-w-lg p-5`} initial={{ scale: 0.95 }} animate={{ scale: 1 }}>
+      <m.div className={`${card} max-w-lg p-5`} initial={{ scale: 0.95 }} animate={{ scale: 1 }}>
         <h2 className="font-display text-3xl font-bold text-cream">Waiting room</h2>
         <p className="mt-1 text-sm text-cream/60">Share the code to invite friends.</p>
         <div className="mt-4 flex justify-center">
@@ -209,7 +210,7 @@ export function LobbyPanel({
             <p className="text-sm text-cream/60">Waiting for {hostName || "the host"} to start…</p>
           )}
         </div>
-      </motion.div>
+      </m.div>
     </Fade>
   )
 }
@@ -244,9 +245,9 @@ export function CountdownOverlay({ seconds }: { seconds: number }) {
     <Fade>
       <div className="text-center">
         <p className="text-sm uppercase tracking-[0.3em] text-cream/60">Next round in</p>
-        <motion.p key={seconds} initial={{ scale: 1.6, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="font-display text-8xl font-bold text-gold">
+        <m.p key={seconds} initial={{ scale: 1.6, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="font-display text-8xl font-bold text-gold">
           {seconds}
-        </motion.p>
+        </m.p>
       </div>
     </Fade>
   )
@@ -255,7 +256,7 @@ export function CountdownOverlay({ seconds }: { seconds: number }) {
 export function TurnSummaryOverlay({ summary }: { summary: TurnSummary }) {
   return (
     <Fade className="absolute inset-0 z-30 flex items-center justify-center bg-black/60 p-4">
-      <motion.div className={card} initial={{ y: 16, scale: 0.95 }} animate={{ y: 0, scale: 1 }}>
+      <m.div className={card} initial={{ y: 16, scale: 0.95 }} animate={{ y: 0, scale: 1 }}>
         <p className="text-xs uppercase tracking-[0.3em] text-cream/50">The word was</p>
         <p className="mt-1 font-display text-4xl font-bold text-gold">{summary.word ?? "—"}</p>
         <ul className="mt-5 space-y-1.5 text-left">
@@ -270,7 +271,7 @@ export function TurnSummaryOverlay({ summary }: { summary: TurnSummary }) {
             </li>
           ))}
         </ul>
-      </motion.div>
+      </m.div>
     </Fade>
   )
 }
@@ -282,10 +283,11 @@ const podiumStyle = [
 ]
 
 export function GameOverOverlay({
-  scores, reason, isHost, canPlayAgain, onPlayAgain, onLeave,
+  scores, reason, gallery, isHost, canPlayAgain, onPlayAgain, onLeave,
 }: {
   scores: Score[]
   reason?: string
+  gallery: GalleryEntry[]
   isHost: boolean
   canPlayAgain: boolean
   onPlayAgain: () => void
@@ -296,7 +298,7 @@ export function GameOverOverlay({
   const rankOf = (score: number) => scores.findIndex((s) => s.score === score) + 1
   return (
     <Fade className={`${backdrop} z-50`}>
-      <motion.div className={`${card} max-h-[90vh] overflow-y-auto`} initial={{ scale: 0.85, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={{ delay: 0.15 }}>
+      <m.div className={`${gallery.length ? card.replace("max-w-md", "max-w-2xl") : card} max-h-[90vh] overflow-y-auto`} initial={{ scale: 0.85, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={{ delay: 0.15 }}>
         <h2 className="font-display text-4xl font-bold text-gold">Game over!</h2>
         {reason ? (
           <p className="mt-4 text-cream/70">{reason}</p>
@@ -308,7 +310,7 @@ export function GameOverOverlay({
                   <Trophy className={`h-6 w-6 ${podiumStyle[rankOf(player.score) - 1].color}`} />
                   <span className="mt-1 w-full truncate text-sm font-semibold text-cream">{player.name}</span>
                   <span className="text-xs text-cream/60 tabular-nums">{player.score} pts</span>
-                  <motion.div
+                  <m.div
                     className={`mt-2 w-full rounded-t-lg bg-panel-2 ${podiumStyle[i].height} flex items-start justify-center pt-2 font-display text-2xl font-bold ${podiumStyle[i].color}`}
                     initial={{ scaleY: 0 }}
                     animate={{ scaleY: 1 }}
@@ -316,7 +318,7 @@ export function GameOverOverlay({
                     transition={{ delay: 0.3 + (2 - i) * 0.15 }}
                   >
                     {rankOf(player.score)}
-                  </motion.div>
+                  </m.div>
                 </div>
               ))}
             </div>
@@ -330,6 +332,7 @@ export function GameOverOverlay({
                 ))}
               </ul>
             )}
+            <Gallery entries={gallery} />
           </>
         )}
         <div className="mt-7 flex flex-wrap justify-center gap-3">
@@ -344,7 +347,7 @@ export function GameOverOverlay({
             <LogOut className="h-4 w-4" /> Leave
           </button>
         </div>
-      </motion.div>
+      </m.div>
     </Fade>
   )
 }

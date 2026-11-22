@@ -10,6 +10,17 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap" rel="stylesheet" />
     <title>ScribbleVerse</title>
+    <script>
+      // Apply the saved (or OS) theme before first paint, so light-mode users
+      // never see a dark flash. Kept in sync with src/theme.ts.
+      try {
+        var saved = localStorage.getItem("scribbleverse:theme");
+        var theme = saved === "light" || saved === "dark"
+          ? saved
+          : (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+        document.documentElement.dataset.theme = theme;
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>
