@@ -30,6 +30,24 @@ export function isCorrectGuess(guess: string, word: string): boolean {
 }
 
 /**
+ * True when the word appears in the guess as a whole word (a non-letter or the
+ * string edge on both sides), so "an apple" contains "apple" but "pineapple" doesn't.
+ */
+export function containsWord(guess: string, word: string): boolean {
+  const g = normalise(guess);
+  const w = normalise(word);
+  if (!w) return false;
+  const isLetter = (c: string | undefined) => c !== undefined && /\p{L}/u.test(c);
+  let from = 0;
+  for (;;) {
+    const at = g.indexOf(w, from);
+    if (at === -1) return false;
+    if (!isLetter(g[at - 1]) && !isLetter(g[at + w.length])) return true;
+    from = at + 1;
+  }
+}
+
+/**
  * True when a wrong guess is nearly right: one typo for short words, two for
  * words of six or more letters. Very short words never count as "close",
  * since almost any guess would be within one edit of them.

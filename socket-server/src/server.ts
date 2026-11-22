@@ -26,6 +26,7 @@ import { drawingOrderFor } from './game/turnOrder';
 import { buildWordPool, MIXED_WORDS, pickWordOptions, WORD_OPTION_COUNT, type Category } from './game/words';
 import {
   buildHint,
+  containsWord,
   hintCountFor,
   hintScheduleMs,
   isCloseGuess,
@@ -500,7 +501,7 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
         const index = pickHintIndex(word, words.revealed);
         if (index === null) return;
         words.revealed.add(index);
-        io.to(roomId).except(drawerId).emit('hint', { word: buildHint(word, words.revealed) });
+        io.to(roomId).except(state.drawingOrder[0] ?? drawerId).emit('hint', { word: buildHint(word, words.revealed) });
       }, delay)
     );
 
@@ -746,7 +747,9 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
     let word: string | null = null;
     let timeLeft = 0;
     if (phase === 'drawing' && words?.currentWord) {
-      word = isDrawer ? words.currentWord : buildHint(words.currentWord, words.revealed);
+      const seatName = rooms[roomId]?.find((p) => p.id === forSocketId)?.name;
+      const knowsWord = isDrawer || (!!seatName && !!correctGuessers[roomId]?.has(seatName));
+      word = knowsWord ? words.currentWord : buildHint(words.currentWord, words.revealed);
       timeLeft = Math.ceil((startedAt + state.timePerRound * 1000 - now) / 1000);
     } else if (phase === 'choosing') {
       timeLeft = Math.ceil((startedAt + WORD_SELECTION_MS - now) / 1000);
@@ -967,6 +970,12 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
         );
         const message = { user, text, timestamp: Date.now(), correct: false, guessed: true };
         audience.forEach((p) => io.to(p.id).emit('chatMessage', message));
+        return;
+      }
+
+      if (isGuessOpen && !isCorrectGuess(text, currentWord!) && containsWord(text, currentWord!)) {
+        // A message with the word inside it would hand the answer to everyone.
+        socket.emit('closeGuess', { text });
         return;
       }
 

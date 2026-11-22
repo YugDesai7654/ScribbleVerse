@@ -543,6 +543,33 @@ describe('game flow (Socket.IO integration)', () => {
     expect(seenByBystander.map((m) => m.text)).not.toContain(nearMiss);
   });
 
+  it('keeps a guess that contains the word private', async () => {
+    const { roomId, others, word } = await liveTurn();
+    const [sender, bystander] = others;
+
+    const seenByBystander = collect<{ text: string }>(bystander.socket, 'chatMessage');
+    const close = waitForEvent<{ text: string }>(sender.socket, 'closeGuess');
+    sender.socket.emit('chatMessage', { roomId, user: sender.name, text: `is it a ${word}?` });
+
+    expect((await close).text).toBe(`is it a ${word}?`);
+    await sleep(300);
+    expect(seenByBystander.some((m) => m.text.includes(word))).toBe(false);
+  });
+
+  it('gives a player who already guessed the full word after a refresh', async () => {
+    const { roomId, others, word } = await liveTurn();
+    const [guesser, bystander] = others;
+
+    const correct = waitForEvent(bystander.socket, 'pointsUpdate');
+    guesser.socket.emit('chatMessage', { roomId, user: guesser.name, text: word });
+    await correct;
+
+    dropNetwork(guesser.socket);
+    await sleep(100);
+    const back = await rejoin(roomId, guesser.name, guesser.token);
+    expect(back.sync.word).toBe(word);
+  });
+
   it('keeps chat from players who guessed among them and the drawer, then reports turn gains', async () => {
     const { roomId, drawer, others, word } = await liveTurn();
     const [first, second] = others;
@@ -639,7 +666,7 @@ describe('game flow (Socket.IO integration)', () => {
     expect(back.sync.scores[guesser.name]).toBe(scoreBefore);
     expect(back.sync.guessed).toContain(guesser.name);
     expect(back.sync.strokes.map((s) => s.strokeId)).toEqual(['s0', 's1']);
-    expect(back.sync.word).toMatch(/_/); // guessers get the hint pattern, never the word
+    expect(back.sync.word).toBe(word); // this guesser already knows the word
     expect(back.sync.timeLeft).toBeGreaterThan(0);
 
     // The seat moved to the new socket rather than being duplicated.

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildHint,
+  containsWord,
   hintCountFor,
   hintScheduleMs,
   isCloseGuess,
@@ -68,5 +69,18 @@ describe('hints', () => {
   it('never reveals the final hidden letter', () => {
     expect(pickHintIndex('cat', new Set([0, 1]))).toBeNull();
     expect(pickHintIndex('cat', new Set([0]), () => 0)).toBe(1);
+  });
+});
+
+describe('containsWord', () => {
+  it.each([
+    ['an apple', 'apple', true],
+    ['APPLE!!', 'apple', true],
+    ['i love ice cream', 'ice cream', true],
+    ['pineapple', 'apple', false],
+    ['applesauce', 'apple', false],
+    ['banana', 'apple', false],
+  ])('containsWord(%s, %s) is %s', (guess, word, expected) => {
+    expect(containsWord(guess, word)).toBe(expected);
   });
 });
