@@ -80,6 +80,20 @@ describe('dedupeDisplayNames', () => {
   });
 });
 
+describe('dedupeDisplayNames collation', () => {
+  it('treats names equal under the index collation as duplicates, beyond toLowerCase', async () => {
+    await seedUser('\uFB01sh', new Date('2026-01-01')); // "fi" ligature
+    await seedUser('FISH', new Date('2026-02-01'));
+    await seedUser('sam', new Date('2026-01-01'));
+    await seedUser('\uFF33\uFF41\uFF4D', new Date('2026-02-01')); // full-width "Sam"
+
+    const { renamed } = await dedupeDisplayNames();
+    expect(renamed.map((r) => r.from).sort()).toEqual(['FISH', '\uFF33\uFF41\uFF4D'].sort());
+    // The index must now build without a duplicate-key failure.
+    await expect(User.syncIndexes()).resolves.toBeDefined();
+  });
+});
+
 describe('display name index', () => {
   it('rejects a name that differs only by case', async () => {
     await User.syncIndexes();

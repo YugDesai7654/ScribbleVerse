@@ -2,6 +2,8 @@ import { User } from '../model/user';
 import { GameResult } from '../model/gameResult';
 
 const MAX_NAME_LENGTH = 20;
+// Must match the unique index in model/user.ts.
+const COLLATION = { locale: 'en', strength: 2 } as const;
 
 export type RenamedUser = { userId: string; from: string; to: string };
 
@@ -12,35 +14,36 @@ export type RenamedUser = { userId: string; from: string; to: string };
  * 20 characters). Their past game results are renamed to match.
  */
 export async function dedupeDisplayNames(): Promise<{ renamed: RenamedUser[] }> {
-  const users = await User.find({})
-    .sort({ createdAt: 1, _id: 1 })
-    .select('displayName')
-    .lean<{ _id: unknown; displayName: string }[]>();
+  // Group with the index's own collation, so "equal" means exactly what the
+  // unique index will consider equal (not just equal after toLowerCase).
+  const groups = await User.aggregate<{ ids: unknown[] }>(
+    [
+      { $sort: { createdAt: 1, _id: 1 } },
+      { $group: { _id: '$displayName', ids: { $push: '$_id' }, count: { $sum: 1 } } },
+      { $match: { count: { $gt: 1 } } },
+    ],
+    { collation: COLLATION }
+  );
 
-  const taken = new Set(users.map((u) => u.displayName.toLowerCase()));
-  const seen = new Set<string>();
   const renamed: RenamedUser[] = [];
+  for (const group of groups) {
+    // $push follows the pre-group sort, so the oldest account is first.
+    for (const id of group.ids.slice(1)) {
+      const user = await User.findById(id).select('displayName').lean<{ _id: unknown; displayName: string }>();
+      if (!user) continue;
 
-  for (const user of users) {
-    const key = user.displayName.toLowerCase();
-    if (!seen.has(key)) {
-      seen.add(key);
-      continue;
+      let n = 1;
+      let candidate: string;
+      do {
+        const suffix = String(n);
+        candidate = user.displayName.slice(0, MAX_NAME_LENGTH - suffix.length) + suffix;
+        n += 1;
+      } while (await User.exists({ displayName: candidate }).collation(COLLATION));
+
+      await User.updateOne({ _id: user._id }, { $set: { displayName: candidate } });
+      await GameResult.updateMany({ userId: user._id }, { $set: { displayName: candidate } });
+      renamed.push({ userId: String(user._id), from: user.displayName, to: candidate });
     }
-
-    let n = 1;
-    let candidate: string;
-    do {
-      const suffix = String(n);
-      candidate = user.displayName.slice(0, MAX_NAME_LENGTH - suffix.length) + suffix;
-      n += 1;
-    } while (taken.has(candidate.toLowerCase()));
-    taken.add(candidate.toLowerCase());
-    seen.add(candidate.toLowerCase());
-
-    await User.updateOne({ _id: user._id }, { $set: { displayName: candidate } });
-    await GameResult.updateMany({ userId: user._id }, { $set: { displayName: candidate } });
-    renamed.push({ userId: String(user._id), from: user.displayName, to: candidate });
   }
 
   return { renamed };

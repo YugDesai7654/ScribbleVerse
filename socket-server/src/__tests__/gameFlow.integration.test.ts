@@ -612,6 +612,15 @@ describe('game flow (Socket.IO integration)', () => {
     expect((await failed).message).toBe('Could not create the room. Please try again.');
   });
 
+  it('refreshes the room record when a seat is reclaimed with a token', async () => {
+    // Mid-game, a dropped seat is held; in the lobby it would be released at once.
+    const { roomId, others } = await liveTurn();
+    vi.mocked(touchRoom).mockClear();
+    dropNetwork(others[0].socket);
+    await rejoin(roomId, others[0].name, (others[0] as { token?: string }).token as string);
+    await vi.waitFor(() => expect(touchRoom).toHaveBeenCalledWith(roomId));
+  });
+
   it('refreshes the room record on join and start', async () => {
     vi.mocked(touchRoom).mockClear();
     const { roomId, players } = await setupRoom(['Alice', 'Bob']);

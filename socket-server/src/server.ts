@@ -890,6 +890,7 @@ export function createApp({ reconnectGraceMs = RECONNECT_GRACE_MS }: AppOptions 
           if (currentRoom) return; // a concurrent join from this socket already succeeded
           currentRoom = roomId;
           playerName = seat.name;
+          keepRoomAlive(roomId);
           await rejoinSeat(roomId, seat);
           return;
         }
