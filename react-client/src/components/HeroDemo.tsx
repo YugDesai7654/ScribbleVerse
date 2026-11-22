@@ -158,9 +158,8 @@ export default function HeroDemo() {
                   message.text
                 ) : (
                   <>
-                    <span className="font-semibold" style={{ color: avatarColor(message.user) }}>
-                      {message.user}:
-                    </span>{" "}
+                    <span className="inline-block h-2 w-2 rounded-full align-middle" style={{ backgroundColor: avatarColor(message.user) }} />{" "}
+                    <span className="font-semibold">{message.user}:</span>{" "}
                     {message.text}
                     {message.tone === "close" && <span className="block text-xs text-gold">is close!</span>}
                   </>

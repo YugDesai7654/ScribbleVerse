@@ -5,6 +5,14 @@ export const CANVAS_BACKGROUND = "#ffffff"
 
 /** How different (0..255 per channel) a pixel may be and still count as the same region. Soaks up anti-aliased edges. */
 const FILL_TOLERANCE = 64
+/**
+ * After filling, edge pixels within this distance of the region's colour are
+ * filled too. 128 is the midpoint: such a pixel is mostly region (anti-aliasing),
+ * not line. Even the palette's grey line (148 from white) stays intact.
+ */
+const EDGE_TOLERANCE = 128
+/** How many pixels deep the edge clean-up goes. */
+const EDGE_PASSES = 2
 
 function hexToRgb(hex: string): [number, number, number] {
   const value = parseInt(hex.slice(1), 16)
@@ -90,6 +98,32 @@ export function floodFill(ctx: CanvasRenderingContext2D, x: number, y: number, c
         below = down
       }
     }
+  }
+  // Anti-aliased pixels along the outline are part-way between the region and
+  // the line, so some fall outside the tolerance and would stay as a light
+  // fringe (BUG-008). Pull in neighbours that are still closer to the region's
+  // colour than to a solid line, without eating into the line itself.
+  for (let pass = 0; pass < EDGE_PASSES; pass++) {
+    const edge: number[] = []
+    for (let pixel = 0; pixel < visited.length; pixel++) {
+      if (visited[pixel]) continue
+      const px = pixel % width
+      const touchesFill =
+        (px > 0 && visited[pixel - 1] === 1) ||
+        (px < width - 1 && visited[pixel + 1] === 1) ||
+        (pixel >= width && visited[pixel - width] === 1) ||
+        (pixel < visited.length - width && visited[pixel + width] === 1)
+      if (!touchesFill) continue
+      const i = pixel * 4
+      const distance = Math.max(
+        Math.abs(data[i] - target[0]),
+        Math.abs(data[i + 1] - target[1]),
+        Math.abs(data[i + 2] - target[2])
+      )
+      if (distance <= EDGE_TOLERANCE) edge.push(pixel)
+    }
+    if (edge.length === 0) break
+    edge.forEach(paint)
   }
   ctx.putImageData(image, 0, 0)
 }
